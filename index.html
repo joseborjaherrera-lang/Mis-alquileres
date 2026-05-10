@@ -148,7 +148,7 @@ const SUPABASE_URL = 'https://elbvshufqehfkbgpgqov.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_7sVgzhgou-8uBFy6L-cgOw_X9HS-NnV';
 // ════════════════════════════════════════════════════
 
-const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
 
 let currentUser=null, currentSection='resumen', nextId=1000, authMode='login', _sc=0;
 const MES_ACTUAL=new Date().getMonth()+1, ANIO_ACTUAL=new Date().getFullYear();
