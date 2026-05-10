@@ -116,26 +116,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </head>
 <body>
 
+<div class="sync-toast" id="sync-toast">💾 Guardado</div>
 
-<div class="sync-toast" id="sync-toast">☁️ Guardado</div>
-<div id="auth-screen">
-  <div style="font-size:2.8rem;margin-bottom:0.5rem;">🏠</div>
-  <h1>Mis Alquileres</h1>
-  <p>Entra para sincronizar en todos tus dispositivos</p>
-  <div class="auth-form">
-    <input type="email" placeholder="Email" id="auth-email" autocomplete="email"/>
-    <input type="password" placeholder="Contraseña" id="auth-pass" autocomplete="current-password"/>
-    <div id="auth-repeat-wrap" style="display:none;"><input type="password" placeholder="Repetir contraseña" id="auth-repeat"/></div>
-    <div class="auth-error" id="auth-error"></div>
-    <button class="auth-btn" id="auth-btn" onclick="doAuth()">Entrar</button>
-    <button class="auth-toggle" id="auth-toggle-btn" onclick="toggleAuthMode()">¿No tienes cuenta? Regístrate</button>
-  </div>
-</div>
+<div id="auth-screen" style="display:none;"></div>
 
 <div id="app">
   <div class="top-bar">
     <span class="top-bar-title" id="top-title">📊 Resumen</span>
-    <button class="icon-btn" onclick="doLogout()">🚪</button>
     
   </div>
   <div class="content" id="main-content"></div>
@@ -152,11 +139,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="modal" id="modal-content"></div>
 </div>
 
-
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-const SUPABASE_URL = 'https://rjgzvmijdwgtaymhobwv.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqZ3p2bWlqZHdndGF5bWhvYnd2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5MTAyMzIsImV4cCI6MjA5MzQ4NjIzMn0.AvCXedxyfX1JKgTgTgg1u_QKp7DX2B9tnf5CEkW25gE';
+// ════════════════════════════════════════════════════
+//  CONFIGURACIÓN — rellena con tus datos de Supabase
+// ════════════════════════════════════════════════════
+const SUPABASE_URL = 'https://elbvshufqehfkbgpgqov.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_7sVgzhgou-8uBFy6L-cgOw_X9HS-NnV';
+// ════════════════════════════════════════════════════
+
 const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let currentUser=null, currentSection='resumen', nextId=1000, authMode='login', _sc=0;
@@ -166,9 +157,9 @@ let propiedades=[];
 
 // ── SYNC ──────────────────────────────────────────────
 let _saveTimer=null;
-function showToast(msg){const t=document.getElementById('sync-toast');if(t){t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000);}}
+function showToast(msg){const t=document.getElementById('sync-toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000);}
 
-function saveData(){
+async function saveData(){
   try{localStorage.setItem('alq_data',JSON.stringify({propiedades,nextId}));}catch(e){}
   if(!currentUser)return;
   clearTimeout(_saveTimer);
@@ -181,17 +172,19 @@ function saveData(){
 }
 
 async function loadFromCloud(){
-  try{
-    const d=JSON.parse(localStorage.getItem('alq_data')||'null');
-    if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;}
-  }catch(e){}
   if(!currentUser)return;
   try{
     const {data}=await _sb.from('alquileres').select('data').eq('user_id',currentUser.id).single();
     if(data&&data.data){
       const d=JSON.parse(data.data);
       if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;}
+      return;
     }
+  }catch(e){}
+  // Fallback a datos locales (migración desde versión anterior)
+  try{
+    const d=JSON.parse(localStorage.getItem('alq_data')||'null');
+    if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;saveData();}
   }catch(e){}
 }
 
@@ -239,6 +232,7 @@ async function doAuth(){
     }else{
       const {error}=await _sb.auth.signInWithPassword({email,password:pass});
       if(error)throw error;
+      // onAuthStateChange se encarga del resto
     }
   }catch(e){
     showAuthError(e.message==='Invalid login credentials'?'Email o contraseña incorrectos':e.message||'Error al entrar');
@@ -253,21 +247,56 @@ async function doLogout(){
   document.getElementById('auth-screen').style.display='flex';
 }
 
-// ── ARRANQUE ──────────────────────────────────────────
+// ── ARRANQUE CON LOGIN ────────────────────────────────
+function mostrarLogin(){
+  document.getElementById('app').style.display='none';
+  const s=document.getElementById('auth-screen');
+  s.style.display='flex';
+  s.innerHTML=`
+    <h1>🏠 Mis Alquileres</h1>
+    <p>Entra para sincronizar en todos tus dispositivos</p>
+    <div class="auth-form">
+      <input id="auth-email" type="email" placeholder="Email" autocomplete="email"/>
+      <input id="auth-pass" type="password" placeholder="Contraseña" autocomplete="current-password"/>
+      <div id="auth-repeat-wrap" style="display:none;">
+        <input id="auth-repeat" type="password" placeholder="Repetir contraseña"/>
+      </div>
+      <div class="auth-error" id="auth-error"></div>
+      <button class="auth-btn" id="auth-btn" onclick="doAuth()">Entrar</button>
+      <button class="auth-toggle" id="auth-toggle-btn" onclick="toggleAuthMode()">¿No tienes cuenta? Regístrate</button>
+    </div>
+  `;
+}
+
+function mostrarApp(){
+  document.getElementById('auth-screen').style.display='none';
+  document.getElementById('app').style.display='flex';
+  navigate('resumen');
+}
+
 _sb.auth.onAuthStateChange(async(event,session)=>{
   if(session&&session.user){
     currentUser=session.user;
     await loadFromCloud();
     checkResetMensual();
-    document.getElementById('auth-screen').style.display='none';
-    document.getElementById('app').style.display='flex';
-    navigate('resumen');
+    mostrarApp();
   }else{
     currentUser=null;
-    document.getElementById('auth-screen').style.display='flex';
-    document.getElementById('app').style.display='none';
+    mostrarLogin();
   }
 });
+
+(async function(){
+  const {data:sessionData}=await _sb.auth.getSession();
+  if(sessionData&&sessionData.session&&sessionData.session.user){
+    currentUser=sessionData.session.user;
+    await loadFromCloud();
+    checkResetMensual();
+    mostrarApp();
+  }else{
+    mostrarLogin();
+  }
+})();
 
 // ── NAV ───────────────────────────────────────────────
 function navigate(s){
