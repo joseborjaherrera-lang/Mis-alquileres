@@ -112,11 +112,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .sync-toast{position:fixed;top:60px;right:1rem;background:#1a1a1a;color:#fff;padding:0.5rem 0.9rem;border-radius:20px;font-size:0.75rem;z-index:999;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.2);}
 .sync-toast.show{display:block;}
 .user-chip{font-size:0.7rem;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:20px;padding:0.25rem 0.7rem;color:#065f46;margin-bottom:0.8rem;display:inline-block;}
+#loading-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#fff;gap:1rem;}
+.spinner{width:36px;height:36px;border:3px solid #f0f0f0;border-top-color:#1a1a1a;border-radius:50%;animation:spin 0.8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
 
 <div class="sync-toast" id="sync-toast">💾 Guardado</div>
+
+<div id="loading-screen">
+  <div class="spinner"></div>
+  <div style="font-size:0.85rem;color:#888;">Cargando...</div>
+</div>
 
 <div id="auth-screen" style="display:none;"></div>
 
@@ -249,6 +257,7 @@ async function doLogout(){
 
 // ── ARRANQUE CON LOGIN ────────────────────────────────
 function mostrarLogin(){
+  document.getElementById('loading-screen').style.display='none';
   document.getElementById('app').style.display='none';
   const s=document.getElementById('auth-screen');
   s.style.display='flex';
@@ -269,6 +278,7 @@ function mostrarLogin(){
 }
 
 function mostrarApp(){
+  document.getElementById('loading-screen').style.display='none';
   document.getElementById('auth-screen').style.display='none';
   document.getElementById('app').style.display='flex';
   navigate('resumen');
@@ -291,25 +301,28 @@ _sb.auth.onAuthStateChange(async(event,session)=>{
 });
 
 (async function(){
-  try{
-    const {data:sessionData,error}=await _sb.auth.getSession();
-    if(error){await _sb.auth.signOut();mostrarLogin();return;}
-    if(sessionData&&sessionData.session&&sessionData.session.user){
-      const {data:userData,error:userError}=await _sb.auth.getUser();
-      if(userError||!userData||!userData.user){
-        await _sb.auth.signOut();mostrarLogin();return;
-      }
-      currentUser=userData.user;
-      await loadFromCloud();
-      checkResetMensual();
-      mostrarApp();
-    }else{
-      mostrarLogin();
+  // Timeout de seguridad: si Supabase tarda más de 4s, mostrar login
+  const timeout=new Promise(res=>setTimeout(()=>res('timeout'),4000));
+  const authCheck=async()=>{
+    try{
+      const {data:sessionData,error}=await _sb.auth.getSession();
+      if(error){await _sb.auth.signOut();return'login';}
+      if(sessionData&&sessionData.session&&sessionData.session.user){
+        const {data:userData,error:userError}=await _sb.auth.getUser();
+        if(userError||!userData||!userData.user){await _sb.auth.signOut();return'login';}
+        currentUser=userData.user;
+        await loadFromCloud();
+        checkResetMensual();
+        return'app';
+      }else{return'login';}
+    }catch(e){
+      try{await _sb.auth.signOut();}catch(e2){}
+      return'login';
     }
-  }catch(e){
-    try{await _sb.auth.signOut();}catch(e2){}
-    mostrarLogin();
-  }
+  };
+  const result=await Promise.race([authCheck(),timeout]);
+  if(result==='app')mostrarApp();
+  else mostrarLogin();
 })();
 
 // ── NAV ───────────────────────────────────────────────
