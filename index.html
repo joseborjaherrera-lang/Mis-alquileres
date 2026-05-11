@@ -156,7 +156,7 @@ const SUPABASE_URL = 'https://elbvshufqehfkbgpgqov.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVsYnZzaHVmcWVoZmtiZ3BncW92Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0Mjg1ODIsImV4cCI6MjA5NDAwNDU4Mn0.WMaOy9Tk_w8MzXZNk0iU03ri0pypItaKo8XDvuwfUBI';
 // ════════════════════════════════════════════════════
 
-const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
+const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false,storage:{getItem:()=>null,setItem:()=>{},removeItem:()=>{}}}});
 
 let currentUser=null, currentSection='resumen', nextId=1000, authMode='login', _sc=0;
 const MES_ACTUAL=new Date().getMonth()+1, ANIO_ACTUAL=new Date().getFullYear();
