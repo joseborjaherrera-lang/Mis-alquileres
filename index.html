@@ -275,25 +275,39 @@ function mostrarApp(){
 }
 
 _sb.auth.onAuthStateChange(async(event,session)=>{
-  if(session&&session.user){
-    currentUser=session.user;
-    await loadFromCloud();
-    checkResetMensual();
-    mostrarApp();
-  }else{
-    currentUser=null;
-    mostrarLogin();
+  if(event==='SIGNED_OUT'||event==='USER_DELETED'){
+    currentUser=null;propiedades=[];mostrarLogin();return;
+  }
+  if(event==='TOKEN_REFRESHED'||event==='SIGNED_IN'){
+    if(session&&session.user){
+      currentUser=session.user;
+      await loadFromCloud();
+      checkResetMensual();
+      mostrarApp();
+    }else{
+      currentUser=null;mostrarLogin();
+    }
   }
 });
 
 (async function(){
-  const {data:sessionData}=await _sb.auth.getSession();
-  if(sessionData&&sessionData.session&&sessionData.session.user){
-    currentUser=sessionData.session.user;
-    await loadFromCloud();
-    checkResetMensual();
-    mostrarApp();
-  }else{
+  try{
+    const {data:sessionData,error}=await _sb.auth.getSession();
+    if(error){await _sb.auth.signOut();mostrarLogin();return;}
+    if(sessionData&&sessionData.session&&sessionData.session.user){
+      const {data:userData,error:userError}=await _sb.auth.getUser();
+      if(userError||!userData||!userData.user){
+        await _sb.auth.signOut();mostrarLogin();return;
+      }
+      currentUser=userData.user;
+      await loadFromCloud();
+      checkResetMensual();
+      mostrarApp();
+    }else{
+      mostrarLogin();
+    }
+  }catch(e){
+    try{await _sb.auth.signOut();}catch(e2){}
     mostrarLogin();
   }
 })();
