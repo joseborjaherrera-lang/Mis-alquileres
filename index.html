@@ -706,10 +706,12 @@ function renderResumen(c){
   if(alertas.length){
     alertasHTML=`<div class="sec-title" style="font-size:0.85rem;">🔔 Alertas (${alertas.length})</div>`;
     alertasCobro.forEach(a=>{
-      alertasHTML+=`<div class="alert-box pendiente" style="padding:0.6rem 0.8rem;margin-bottom:0.4rem;">
+      alertasHTML+=`<div class="alert-box pendiente" id="alerta-cobro-${a.propId}-${a.habId||0}-${a.igId||0}" style="padding:0.6rem 0.8rem;margin-bottom:0.4rem;">
         <div class="alert-title" style="font-size:0.82rem;">💰 ${a.prop} — ${a.inquilino}</div>
-        <div class="alert-sub" style="font-size:0.75rem;">${fmt(a.importe)}€ · debe <strong>${NOMBRES_MES[(a.mes||MES_ACTUAL)-1]} ${a.anio||ANIO_ACTUAL}</strong></div>
-        <div class="alert-action"><button class="btn btn-success btn-sm" onclick="marcarCobroPendiente(${a.propId},${a.habId||'null'},${a.igId||'null'})">✓ Cobrado</button></div>
+        <div class="alert-sub" style="font-size:0.75rem;">${fmt(a.importe)}€ · <strong>${NOMBRES_MES[(a.mes||MES_ACTUAL)-1]} ${a.anio||ANIO_ACTUAL}</strong></div>
+        <div class="alert-action" style="margin-top:0.4rem;">
+          <span class="estado-pill pill-pend" style="cursor:pointer;font-size:0.78rem;padding:0.3rem 0.7rem;" onclick="marcarCobroDesdeAlerta(${a.propId},${a.habId||'null'},${a.igId||'null'},this)">⏳ Pendiente de pago · toca para cobrar</span>
+        </div>
       </div>`;
     });
     alertasIPC.forEach(a=>{
@@ -754,7 +756,7 @@ function renderResumen(c){
             </div>
           </div>
         </div>
-        ${!yaP?`<div class="alert-action"><button class="btn btn-success btn-sm" onclick="marcarSumPagadoAlerta(${a.propId},${a.sId},this)">✓ Marcar pagado</button></div>`:''}
+        ${!yaP?`<div class="alert-action" style="margin-top:0.4rem;"><span class="estado-pill pill-pend" style="cursor:pointer;font-size:0.78rem;padding:0.3rem 0.7rem;" onclick="marcarSumPagadoDesdeAlerta(${a.propId},${a.sId},this)">⏳ Pendiente de pago · toca para pagar</span></div>`:''}
       </div>`;
     });
   }
@@ -933,6 +935,33 @@ function marcarCobroPendiente(propId,habId,igId){
   else if(igId){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=true;ig.fechaCobro=fecha;}}
   renderSection(currentSection);saveData();
 }
+function marcarCobroDesdeAlerta(propId,habId,igId,pill){
+  // Marcar como cobrado con la fecha de hoy, sin prompt
+  const p=propiedades.find(x=>x.id===propId);
+  if(!p) return;
+  const fecha=new Date().toISOString().slice(0,10);
+  if(habId&&habId!=='null'){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=true;h.fechaCobro=fecha;}}
+  else if(igId&&igId!=='null'){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=true;ig.fechaCobro=fecha;}}
+  // Actualizar pill visualmente y ocultar la alerta
+  if(pill){
+    const box=pill.closest('.alert-box');
+    pill.className='estado-pill pill-ok';
+    pill.style.cursor='default';
+    pill.onclick=null;
+    const d=fecha.slice(8,10)+'/'+fecha.slice(5,7);
+    pill.textContent='✓ Cobrado el '+d;
+    if(box){setTimeout(()=>{box.style.transition='opacity 0.4s';box.style.opacity='0';setTimeout(()=>renderSection(currentSection),420);},600);}
+  }
+  saveData();
+}
+function toggleCobroRapido(propId,habId,igId){
+  const p=propiedades.find(x=>x.id===propId);
+  if(!p) return;
+  const fecha=new Date().toISOString().slice(0,10);
+  if(habId&&habId!=='null'){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=!h.cobrado;h.fechaCobro=h.cobrado?fecha:null;}}
+  else if(igId&&igId!=='null'){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=!ig.cobrado;ig.fechaCobro=ig.cobrado?fecha:null;}}
+  saveData();
+}
 function toggleEditSumAlerta(propId,sId){
   const el=document.getElementById('sum-alert-edit-'+propId+'-'+sId);
   if(el) el.style.display=el.style.display==='none'?'block':'none';
@@ -971,6 +1000,25 @@ function marcarSumPagadoAlerta(propId,sId,btn){
   s.estado='Pagado';s.fechaPago=fecha;
   saveData();
   setTimeout(()=>renderSection(currentSection),900);
+}
+function marcarSumPagadoDesdeAlerta(propId,sId,pill){
+  const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
+  if(!s) return;
+  const fecha=new Date().toISOString().slice(0,10);
+  s.estado='Pagado'; s.fechaPago=fecha;
+  saveData();
+  if(pill){
+    const box=pill.closest('.alert-box');
+    pill.className='estado-pill pill-ok';
+    pill.style.cursor='default';
+    pill.onclick=null;
+    const d=fecha.slice(8,10)+'/'+fecha.slice(5,7);
+    pill.textContent='✓ Pagado el '+d;
+    // Actualizar también la pill de suministro pendiente en la tarjeta del piso
+    const spPill=document.getElementById('sp-'+propId+'-'+sId);
+    if(spPill){spPill.className='estado-pill pill-ok';spPill.style.cursor='default';spPill.onclick=null;spPill.textContent='✓ '+s.tipo+' día '+d.slice(0,2);}
+    if(box){setTimeout(()=>{box.style.transition='opacity 0.4s';box.style.opacity='0';setTimeout(()=>renderSection(currentSection),420);},600);}
+  }
 }
 function toggleSumDetalle(propId,sId){
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
@@ -1164,7 +1212,14 @@ function renderPropiedades(c){
   c.innerHTML=propiedades.map(p=>{
     const ca=calcProp(p),habOc=p.tipo==='habitaciones'?p.habitaciones.filter(h=>h.inquilino).length:0,tiSoc=p.socios&&p.socios.length>0;
     const er=estadoRapido(p);
-    const cobrosHTML=er.cobros.map(co=>`<span class="estado-pill ${co.ok?'pill-ok':'pill-pend'}">${co.ok?'✓':'⏳'} ${co.label}</span>`).join('');
+    const cobrosHTML=er.cobros.map((co,ci)=>{
+      // Buscar el id del ingreso/hab para poder togglear
+      let clickFn='';
+      if(p.tipo==='habitaciones'){const h=p.habitaciones.filter(h=>h.inquilino)[ci];if(h)clickFn=`onclick="event.stopPropagation();toggleCobroRapido(${p.id},${h.id},'null');renderSection(currentSection)"`;
+      }else{const ig=(p.ingresos||[]).filter(ig=>ig.importe>0)[ci];if(ig)clickFn=`onclick="event.stopPropagation();toggleCobroRapido(${p.id},'null',${ig.id});renderSection(currentSection)"`;}
+      const fechaLabel=co.ok&&co.fechaCobro?` · ${co.fechaCobro.slice(8,10)}/${co.fechaCobro.slice(5,7)}`:'';
+      return`<span class="estado-pill ${co.ok?'pill-ok':'pill-pend'}" style="cursor:pointer;" ${clickFn}>${co.ok?'✓':'⏳'} ${co.label}${fechaLabel}</span>`;
+    }).join('');
     const sumHTML=er.pendSum.map(s=>{const per=mesConsumoSum(s);return`<span class="estado-pill pill-warn">💡 ${s.tipo} · ${per.label}</span>`;}).join('');
     return`<div class="card" style="cursor:pointer" onclick="abrirDetalle(${p.id})">
       <div class="card-header">
