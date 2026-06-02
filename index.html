@@ -354,6 +354,27 @@ function renderSection(s){
 function fmt(n){return Math.round(n||0).toLocaleString('es-ES');}
 function fmtDec(n){return(Math.round((n||0)*100)/100).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2});}
 
+// Devuelve el mes de consumo de un suministro (mes anterior al actual por defecto)
+// Si el suministro tiene periodo guardado con formato "YYYY-MM" lo usa,
+// si no, calcula el mes anterior al actual.
+function mesConsumoSum(s){
+  // Si tiene campo periodoFecha guardado como "YYYY-MM" lo usamos
+  if(s.periodoFecha){
+    const [y,m]=s.periodoFecha.split('-').map(Number);
+    if(y&&m) return {mes:m,anio:y,label:NOMBRES_MES[m-1]+' '+y};
+  }
+  // Por defecto: mes anterior al actual
+  let mes=MES_ACTUAL-1,anio=ANIO_ACTUAL;
+  if(mes===0){mes=12;anio=ANIO_ACTUAL-1;}
+  return {mes,anio,label:NOMBRES_MES[mes-1]+' '+anio};
+}
+
+function fmtFechaPago(fechaStr){
+  if(!fechaStr) return null;
+  const [y,m,d]=fechaStr.split('-');
+  return d+'/'+m+'/'+y;
+}
+
 // ── CALCS ─────────────────────────────────────────────
 function importeConIPC(importeBase,fechaEntrada){
   if(!fechaEntrada||!importeBase)return importeBase||0;
@@ -702,10 +723,38 @@ function renderResumen(c){
       </div>`;
     });
     alertasSum.forEach(a=>{
-      alertasHTML+=`<div class="alert-box" id="sum-alert-${a.propId}-${a.sId}" style="padding:0.6rem 0.8rem;margin-bottom:0.4rem;">
-        <div class="alert-title" style="font-size:0.82rem;">💡 ${a.prop} — ${a.suministro}</div>
-        <div class="alert-sub" style="font-size:0.75rem;">${fmt(a.importe)}€${a.pagador?' · '+a.pagador:''}</div>
-        <div class="alert-action"><button class="btn btn-success btn-sm" onclick="marcarSumPagadoAlerta(${a.propId},${a.sId},this)">✓ Pagado</button></div>
+      const p2=propiedades.find(x=>x.id===a.propId),s2=p2?(p2.suministros||[]).find(x=>x.id===a.sId):null;
+      const periodo=s2?mesConsumoSum(s2):{label:NOMBRES_MES[MES_ACTUAL-2>=0?MES_ACTUAL-2:11]+' '+(MES_ACTUAL-1===0?ANIO_ACTUAL-1:ANIO_ACTUAL)};
+      const yaP=s2&&s2.estado==='Pagado';
+      alertasHTML+=`<div class="alert-box${yaP?' ':''}${yaP?'':''}${yaP?'" style="border-left-color:#10b981;background:#d1fae5;':'"'} id="sum-alert-${a.propId}-${a.sId}" style="padding:0.6rem 0.8rem;margin-bottom:0.4rem;border-left:4px solid ${yaP?'#10b981':'#ef4444'};">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.4rem;">
+          <div class="alert-title" id="sum-alert-title-${a.propId}-${a.sId}" style="font-size:0.82rem;flex:1;">💡 ${a.prop} — ${a.suministro}</div>
+          <button onclick="toggleEditSumAlerta(${a.propId},${a.sId})" style="background:none;border:none;cursor:pointer;font-size:0.8rem;color:#6b7280;flex-shrink:0;" title="Editar título y período">✏️</button>
+        </div>
+        <div class="alert-sub" style="font-size:0.75rem;">${fmt(a.importe)}€${a.pagador?' · '+a.pagador:''} · <strong>Consumo: ${periodo.label}</strong></div>
+        ${yaP?`<div style="font-size:0.72rem;color:#065f46;margin-top:0.3rem;">✅ Pagado el ${s2&&s2.fechaPago?fmtFechaPago(s2.fechaPago):'—'}</div>`:''}
+        <div id="sum-alert-edit-${a.propId}-${a.sId}" style="display:none;margin-top:0.4rem;background:#f8fafc;border-radius:6px;padding:0.4rem 0.5rem;border:1px solid #e5e7eb;">
+          <div style="font-size:0.72rem;color:#888;margin-bottom:0.3rem;font-weight:600;">Editar suministro</div>
+          <div style="display:flex;flex-direction:column;gap:0.3rem;">
+            <div style="display:flex;gap:0.3rem;align-items:center;">
+              <span style="font-size:0.72rem;color:#666;min-width:44px;">Título</span>
+              <input id="sum-alert-tit-${a.propId}-${a.sId}" type="text" value="${a.suministro}" style="flex:1;font-size:0.78rem;padding:0.2rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
+            </div>
+            <div style="display:flex;gap:0.3rem;align-items:center;">
+              <span style="font-size:0.72rem;color:#666;min-width:44px;">Período</span>
+              <input id="sum-alert-per-${a.propId}-${a.sId}" type="month" value="${s2&&s2.periodoFecha?s2.periodoFecha:(ANIO_ACTUAL+'-'+(MES_ACTUAL-1===0?'12':String(MES_ACTUAL-1).padStart(2,'0')))}" style="flex:1;font-size:0.78rem;padding:0.2rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
+            </div>
+            ${yaP?`<div style="display:flex;gap:0.3rem;align-items:center;">
+              <span style="font-size:0.72rem;color:#666;min-width:44px;">F.pago</span>
+              <input id="sum-alert-fp-${a.propId}-${a.sId}" type="date" value="${s2&&s2.fechaPago?s2.fechaPago:new Date().toISOString().slice(0,10)}" style="flex:1;font-size:0.78rem;padding:0.2rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
+            </div>`:''}
+            <div style="display:flex;gap:0.3rem;margin-top:0.1rem;">
+              <button onclick="guardarEditSumAlerta(${a.propId},${a.sId},${yaP})" style="background:#1a1a1a;color:white;border:none;border-radius:4px;padding:0.2rem 0.6rem;font-size:0.75rem;cursor:pointer;flex:1;">✓ Guardar</button>
+              <button onclick="document.getElementById('sum-alert-edit-${a.propId}-${a.sId}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:4px;color:#6b7280;cursor:pointer;font-size:0.75rem;padding:0.2rem 0.4rem;">✕</button>
+            </div>
+          </div>
+        </div>
+        ${!yaP?`<div class="alert-action"><button class="btn btn-success btn-sm" onclick="marcarSumPagadoAlerta(${a.propId},${a.sId},this)">✓ Marcar pagado</button></div>`:''}
       </div>`;
     });
   }
@@ -884,20 +933,42 @@ function marcarCobroPendiente(propId,habId,igId){
   else if(igId){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=true;ig.fechaCobro=fecha;}}
   renderSection(currentSection);saveData();
 }
+function toggleEditSumAlerta(propId,sId){
+  const el=document.getElementById('sum-alert-edit-'+propId+'-'+sId);
+  if(el) el.style.display=el.style.display==='none'?'block':'none';
+}
+function guardarEditSumAlerta(propId,sId,tieneFechaPago){
+  const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
+  if(!s) return;
+  const titEl=document.getElementById('sum-alert-tit-'+propId+'-'+sId);
+  const perEl=document.getElementById('sum-alert-per-'+propId+'-'+sId);
+  if(titEl&&titEl.value.trim()) s.tipo=titEl.value.trim();
+  if(perEl&&perEl.value) s.periodoFecha=perEl.value;
+  if(tieneFechaPago){
+    const fpEl=document.getElementById('sum-alert-fp-'+propId+'-'+sId);
+    if(fpEl&&fpEl.value) s.fechaPago=fpEl.value;
+  }
+  saveData();renderSection(currentSection);
+}
 function marcarSumPagadoAlerta(propId,sId,btn){
   const fecha=prompt('Fecha de pago (AAAA-MM-DD):',new Date().toISOString().slice(0,10));
   if(!fecha) return;
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
   if(!s)return;
   const box=document.getElementById('sum-alert-'+propId+'-'+sId);
+  const periodo=mesConsumoSum(s);
   if(box){
     box.style.borderLeftColor='#10b981';box.style.background='#d1fae5';
-    box.querySelector('.alert-title').textContent='✅ Pagado — '+s.tipo+' ('+p.nombre+')';
-    btn.textContent='✓ Pagado';btn.style.background='#065f46';btn.style.color='#fff';btn.disabled=true;
+    const titleEl=box.querySelector('.alert-title')||box.querySelector('[id^="sum-alert-title"]');
+    if(titleEl) titleEl.textContent='✅ Pagado — '+s.tipo+' ('+p.nombre+')';
+    if(btn){btn.textContent='✓ Pagado';btn.style.background='#065f46';btn.style.color='#fff';btn.disabled=true;}
+    // Mostrar fecha de pago
+    const subEl=box.querySelector('.alert-sub');
+    if(subEl) subEl.innerHTML=subEl.innerHTML+'<br><span style="color:#065f46;font-weight:600;">✅ Pagado el '+fmtFechaPago(fecha)+'</span>';
   }
   const pill=document.getElementById('sp-'+propId+'-'+sId);
-  if(pill){pill.className='estado-pill pill-ok';pill.style.cursor='default';pill.onclick=null;pill.textContent='✓ '+s.tipo+' día '+new Date().getDate();}
-  s.estado='Pagado';s.fechaPago=new Date().toISOString().slice(0,10);
+  if(pill){pill.className='estado-pill pill-ok';pill.style.cursor='default';pill.onclick=null;pill.textContent='✓ '+s.tipo+' día '+fecha.slice(8,10);}
+  s.estado='Pagado';s.fechaPago=fecha;
   saveData();
   setTimeout(()=>renderSection(currentSection),900);
 }
@@ -951,7 +1022,7 @@ function renderDetalle(cont){
   if(tab==='resumen'){
     const er=estadoRapido(p);const tiSoc=p.socios&&p.socios.length>0;
     const cobHTML=er.cobros.map(co=>`<span class="estado-pill ${co.ok?'pill-ok':'pill-pend'}">${co.ok?'✓':'⏰'} ${co.label}</span>`).join('');
-    const sumHTML=er.pendSum.map(s=>`<span class="estado-pill pill-warn">⏰ ${s.tipo} ${fmt(s.importe)}€</span>`).join('');
+    const sumHTML=er.pendSum.map(s=>{const per=mesConsumoSum(s);return`<span class="estado-pill pill-warn" id="sp-${p.id}-${s.id}" style="cursor:pointer;" onclick="toggleSumResumen(${p.id},${s.id},event)">⏰ ${s.tipo} ${fmt(s.importe)}€ · ${per.label}</span>`;}).join('');
     tabContent=`<div class="stats3" style="margin-bottom:0.8rem;">
         <div class="stat-box"><div class="stat-label">Ingresos</div><div class="stat-val blue">${fmt(ca.ingresos)}€</div></div>
         <div class="stat-box"><div class="stat-label">Gastos</div><div class="stat-val red">${fmt(ca.totalGastos)}€</div></div>
@@ -991,7 +1062,58 @@ function renderDetalle(cont){
     tabContent+=`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verGastos(${p.id})">+ Añadir gasto</button>`;
   }else if(tab==='suministros'){
     const sums=p.suministros||[];
-    tabContent=(sums.length?`<div class="card">${sums.map(s=>`<div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.3rem;"><div style="display:flex;justify-content:space-between;align-items:center;"><div><div class="li-title">${s.tipo} · ${s.periodo||''}</div><div class="li-sub">${s.pagador}</div></div><div style="display:flex;align-items:center;gap:0.4rem;"><span class="badge badge-${s.estado==='Pagado'?'green':'orange'}" style="cursor:pointer;" onclick="toggleSumDetalle(${p.id},${s.id})">${s.estado==='Pagado'?'✓ Pagado ↩':'⏳ Pend. ✓'}</span><span style="font-weight:700;">${fmt(s.importe)}€</span><button onclick="editarFechaSumDetalle(${p.id},${s.id})" style="background:none;border:none;cursor:pointer;font-size:0.8rem;color:#6b7280;" title="Editar fecha">📅</button></div></div>${s.fechaPago?`<div style="font-size:0.72rem;color:#065f46;background:#f0fdf4;border-radius:6px;padding:0.2rem 0.5rem;">✅ Pagado el ${s.fechaPago}</div>`:''}<div id="fecha-det-${s.id}" style="display:none;background:#f8fafc;border-radius:6px;padding:0.4rem;"><div style="display:flex;align-items:center;gap:0.4rem;"><input type="date" id="fecha-det-inp-${s.id}" value="${s.fechaPago||new Date().toISOString().slice(0,10)}" style="font-size:0.8rem;padding:0.2rem;border:1px solid #d1d5db;border-radius:4px;flex:1;"/><button onclick="guardarFechaSumDetalle(${p.id},${s.id})" style="background:#065f46;color:white;border:none;border-radius:4px;padding:0.2rem 0.5rem;font-size:0.75rem;cursor:pointer;">✓</button><button onclick="document.getElementById('fecha-det-${s.id}').style.display='none'" style="background:none;border:none;color:#6b7280;cursor:pointer;">✕</button></div></div></div>`).join('')}</div>`:'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin suministros</p>');
+    if(!sums.length){
+      tabContent='<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin suministros</p>';
+    } else {
+      tabContent=`<div class="card">${sums.map(s=>{
+        const per=mesConsumoSum(s);
+        const pagado=s.estado==='Pagado';
+        return`<div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.3rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div class="li-title">${s.tipo}</div>
+              <div class="li-sub" style="display:flex;flex-wrap:wrap;gap:0.3rem;align-items:center;">
+                <span>${s.pagador}</span>
+                <span style="background:#ede9fe;color:#5b21b6;border-radius:10px;padding:0.1rem 0.4rem;font-size:0.68rem;font-weight:600;">📅 ${per.label}</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:0.4rem;">
+              <span class="badge badge-${pagado?'green':'orange'}" style="cursor:pointer;" onclick="toggleSumDetalle(${p.id},${s.id})">${pagado?'✓ Pagado ↩':'⏳ Pend. ✓'}</span>
+              <span style="font-weight:700;">${fmt(s.importe)}€</span>
+              <button onclick="toggleEditSumDetalle(${p.id},${s.id})" style="background:none;border:none;cursor:pointer;font-size:0.85rem;color:#6b7280;" title="Editar">✏️</button>
+            </div>
+          </div>
+          ${pagado?`<div style="font-size:0.72rem;color:#065f46;background:#f0fdf4;border-radius:6px;padding:0.2rem 0.5rem;display:flex;justify-content:space-between;align-items:center;">
+            <span>✅ Pagado el ${s.fechaPago?fmtFechaPago(s.fechaPago):'—'}</span>
+          </div>`:''}
+          <div id="edit-sum-det-${s.id}" style="display:none;background:#f8fafc;border-radius:8px;padding:0.5rem;border:1px solid #e5e7eb;">
+            <div style="font-size:0.72rem;font-weight:700;color:#888;margin-bottom:0.4rem;">Editar suministro</div>
+            <div style="display:flex;flex-direction:column;gap:0.3rem;">
+              <div style="display:flex;gap:0.3rem;align-items:center;">
+                <span style="font-size:0.72rem;color:#666;min-width:48px;">Título</span>
+                <input id="esd-tit-${s.id}" type="text" value="${s.tipo}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
+              </div>
+              <div style="display:flex;gap:0.3rem;align-items:center;">
+                <span style="font-size:0.72rem;color:#666;min-width:48px;">Período</span>
+                <input id="esd-per-${s.id}" type="month" value="${s.periodoFecha||(ANIO_ACTUAL+'-'+(MES_ACTUAL-1===0?'12':String(MES_ACTUAL-1).padStart(2,'0')))}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
+              </div>
+              ${pagado?`<div style="display:flex;gap:0.3rem;align-items:center;">
+                <span style="font-size:0.72rem;color:#666;min-width:48px;">F.pago</span>
+                <input id="esd-fp-${s.id}" type="date" value="${s.fechaPago||new Date().toISOString().slice(0,10)}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
+              </div>`:`<div style="display:flex;gap:0.3rem;align-items:center;">
+                <span style="font-size:0.72rem;color:#666;min-width:48px;">F.pago</span>
+                <input id="esd-fp-${s.id}" type="date" value="${new Date().toISOString().slice(0,10)}" placeholder="Al marcar pagado" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
+              </div>`}
+              <div style="display:flex;gap:0.3rem;margin-top:0.2rem;">
+                <button onclick="guardarEditSumDetalle(${p.id},${s.id})" style="background:#1a1a1a;color:white;border:none;border-radius:5px;padding:0.3rem 0.6rem;font-size:0.77rem;cursor:pointer;flex:1;">✓ Guardar</button>
+                <button onclick="document.getElementById('edit-sum-det-${s.id}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:5px;color:#6b7280;cursor:pointer;font-size:0.77rem;padding:0.3rem 0.5rem;">✕</button>
+                <button onclick="borrarSum(${p.id},${s.id})" style="background:#fee2e2;color:#991b1b;border:none;border-radius:5px;padding:0.3rem 0.5rem;font-size:0.77rem;cursor:pointer;">🗑️</button>
+              </div>
+            </div>
+          </div>
+        </div>`;
+      }).join('')}</div>`;
+    }
     tabContent+=`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verSuministrosProp(${p.id})">+ Añadir suministro</button>`;
   }else if(tab==='contrato'){
     const ct=p.contratoPDF;
@@ -1043,7 +1165,7 @@ function renderPropiedades(c){
     const ca=calcProp(p),habOc=p.tipo==='habitaciones'?p.habitaciones.filter(h=>h.inquilino).length:0,tiSoc=p.socios&&p.socios.length>0;
     const er=estadoRapido(p);
     const cobrosHTML=er.cobros.map(co=>`<span class="estado-pill ${co.ok?'pill-ok':'pill-pend'}">${co.ok?'✓':'⏳'} ${co.label}</span>`).join('');
-    const sumHTML=er.pendSum.map(s=>`<span class="estado-pill pill-warn">💡 ${s.tipo}</span>`).join('');
+    const sumHTML=er.pendSum.map(s=>{const per=mesConsumoSum(s);return`<span class="estado-pill pill-warn">💡 ${s.tipo} · ${per.label}</span>`;}).join('');
     return`<div class="card" style="cursor:pointer" onclick="abrirDetalle(${p.id})">
       <div class="card-header">
         <div style="flex:1;"><div class="card-title">${p.nombre}</div><div class="card-subtitle">${p.direccion}</div></div>
@@ -1446,40 +1568,61 @@ function guardarEditGasto(propId,gId){
 // ── SUMINISTROS ───────────────────────────────────────
 function verSuministrosProp(propId){
   const p=propiedades.find(x=>x.id===propId),totalProp=(p.suministros||[]).filter(s=>s.pagador==='Propietario').reduce((a,s)=>a+s.importe,0);
+  const mesAnteriorVal=ANIO_ACTUAL+'-'+(MES_ACTUAL-1===0?'12':String(MES_ACTUAL-1).padStart(2,'0'));
   showModal(`
     <button class="modal-close" onclick="closeModal()">✕</button>
     <div class="modal-title">💡 Suministros — ${p.nombre}</div>
     ${p.tipo==='habitaciones'?`<div class="info-box">Los suministros de viviendas por habitaciones son de la propiedad entera.</div>`:''}
     ${totalProp>0?`<div style="font-size:0.8rem;color:#888;margin-bottom:0.7rem;">Total propietario: <strong style="color:#991b1b;">${fmt(totalProp)}€</strong></div>`:''}
     ${!(p.suministros&&p.suministros.length)?'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin suministros</p>':''}
-    ${(p.suministros||[]).map(s=>`
-      <div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.3rem;">
+    ${(p.suministros||[]).map(s=>{
+      const per=mesConsumoSum(s);
+      const pagado=s.estado==='Pagado';
+      return`<div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.3rem;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
-          <div><div class="li-title">${s.tipo}</div><div class="li-sub">${s.periodo||''} · ${s.pagador}</div></div>
-          <div style="display:flex;align-items:center;gap:0.4rem;">
-            <span class="badge badge-${s.estado==='Pagado'?'green':'orange'}">${s.estado}</span>
+          <div>
+            <div class="li-title">${s.tipo}</div>
+            <div class="li-sub" style="display:flex;flex-wrap:wrap;gap:0.3rem;align-items:center;">
+              <span>${s.pagador}</span>
+              <span style="background:#ede9fe;color:#5b21b6;border-radius:10px;padding:0.1rem 0.4rem;font-size:0.68rem;font-weight:600;">📅 ${per.label}</span>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.35rem;">
+            <span class="badge badge-${pagado?'green':'orange'}" style="cursor:pointer;" onclick="toggleSumEstado(${propId},${s.id})">${pagado?'✓ Pagado ↩':'⏳ Pend. ✓'}</span>
             <span style="font-weight:700;">${fmt(s.importe)}€</span>
-            <button onclick="toggleSumEstado(${propId},${s.id})" style="background:none;border:none;cursor:pointer;font-size:1rem;">${s.estado==='Pagado'?'↩':'✓'}</button>
-            <button onclick="editarFechaSum(${propId},${s.id})" style="background:none;border:none;cursor:pointer;font-size:0.8rem;color:#6b7280;" title="Editar fecha">📅</button>
+            <button onclick="editarFechaSum(${propId},${s.id})" style="background:none;border:none;cursor:pointer;font-size:0.85rem;color:#6b7280;" title="Editar">✏️</button>
             <button onclick="borrarSum(${propId},${s.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;">✕</button>
           </div>
         </div>
-        ${s.fechaPago?`<div style="font-size:0.72rem;color:#065f46;background:#f0fdf4;border-radius:6px;padding:0.2rem 0.5rem;">✅ Pagado el ${s.fechaPago}</div>`:''}
-        <div id="fecha-sum-edit-${s.id}" style="display:none;background:#f8fafc;border-radius:6px;padding:0.4rem 0.5rem;">
-          <div style="display:flex;align-items:center;gap:0.5rem;">
-            <label style="font-size:0.72rem;color:#6b7280;white-space:nowrap;">Fecha pago:</label>
-            <input type="date" id="fecha-sum-input-${s.id}" value="${s.fechaPago||new Date().toISOString().slice(0,10)}" style="font-size:0.8rem;padding:0.2rem 0.4rem;border:1px solid #d1d5db;border-radius:5px;flex:1;"/>
-            <button onclick="guardarFechaSum(${propId},${s.id})" style="background:#065f46;color:white;border:none;border-radius:5px;padding:0.2rem 0.5rem;font-size:0.75rem;cursor:pointer;">✓</button>
-            <button onclick="document.getElementById('fecha-sum-edit-${s.id}').style.display='none'" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:0.9rem;">✕</button>
+        ${pagado&&s.fechaPago?`<div style="font-size:0.72rem;color:#065f46;background:#f0fdf4;border-radius:6px;padding:0.2rem 0.5rem;">✅ Pagado el ${fmtFechaPago(s.fechaPago)}</div>`:''}
+        <div id="fecha-sum-edit-${s.id}" style="display:none;background:#f8fafc;border-radius:8px;padding:0.5rem 0.6rem;border:1px solid #e5e7eb;">
+          <div style="font-size:0.72rem;font-weight:700;color:#888;margin-bottom:0.35rem;">Editar suministro</div>
+          <div style="display:flex;flex-direction:column;gap:0.3rem;">
+            <div style="display:flex;gap:0.3rem;align-items:center;">
+              <span style="font-size:0.72rem;color:#666;min-width:48px;">Título</span>
+              <input id="fse-tit-${s.id}" type="text" value="${s.tipo}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
+            </div>
+            <div style="display:flex;gap:0.3rem;align-items:center;">
+              <span style="font-size:0.72rem;color:#666;min-width:48px;">Período</span>
+              <input type="month" id="fse-per-${s.id}" value="${s.periodoFecha||mesAnteriorVal}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
+            </div>
+            <div style="display:flex;gap:0.3rem;align-items:center;">
+              <span style="font-size:0.72rem;color:#666;min-width:48px;">F.pago</span>
+              <input type="date" id="fecha-sum-input-${s.id}" value="${s.fechaPago||new Date().toISOString().slice(0,10)}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
+            </div>
+            <div style="display:flex;gap:0.3rem;margin-top:0.1rem;">
+              <button onclick="guardarFechaSum(${propId},${s.id})" style="background:#065f46;color:white;border:none;border-radius:5px;padding:0.3rem 0.6rem;font-size:0.75rem;cursor:pointer;flex:1;">✓ Guardar</button>
+              <button onclick="document.getElementById('fecha-sum-edit-${s.id}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:5px;color:#6b7280;cursor:pointer;font-size:0.75rem;padding:0.3rem 0.4rem;">✕</button>
+            </div>
           </div>
         </div>
-      </div>
-    `).join('')}
+      </div>`;
+    }).join('')}
     <hr class="divider"/>
     <div style="font-size:0.85rem;font-weight:700;margin-bottom:0.7rem;">Añadir suministro</div>
     <div class="field"><label>Tipo</label><select id="s-tipo"><option>Luz</option><option>Agua</option><option>Gas</option><option>Internet</option><option>Basuras</option><option>Otro</option></select></div>
     <div class="field-row">
-      <div class="field"><label>Periodo (ej: 2025-05)</label><input id="s-per" placeholder="2025-05"/></div>
+      <div class="field"><label>Período de consumo</label><input id="s-per" type="month" value="${mesAnteriorVal}" /></div>
       <div class="field"><label>Importe (€)</label><input id="s-imp" type="number"/></div>
     </div>
     <div class="field-row">
@@ -1512,26 +1655,49 @@ function editarFechaSum(propId,sId){
 function guardarFechaSum(propId,sId){
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
   const inp=document.getElementById('fecha-sum-input-'+sId);
-  if(s&&inp){s.fechaPago=inp.value;s.estado='Pagado';saveData();}
+  const titEl=document.getElementById('fse-tit-'+sId);
+  const perEl=document.getElementById('fse-per-'+sId);
+  if(s){
+    if(inp&&inp.value){s.fechaPago=inp.value;s.estado='Pagado';}
+    if(titEl&&titEl.value.trim()) s.tipo=titEl.value.trim();
+    if(perEl&&perEl.value) s.periodoFecha=perEl.value;
+    saveData();
+  }
   verSuministrosProp(propId);
 }
 function guardarSum(propId){
   const p=propiedades.find(x=>x.id===propId),imp=parseFloat(document.getElementById('s-imp').value)||0;
   if(!imp){alert('Importe obligatorio');return;}
   p.suministros=p.suministros||[];
-  p.suministros.push({id:nextId++,tipo:document.getElementById('s-tipo').value,periodo:document.getElementById('s-per').value,importe:imp,pagador:document.getElementById('s-pag').value,estado:document.getElementById('s-est').value,recurrente:document.getElementById('s-rec').checked});
+  const perVal=document.getElementById('s-per').value;
+  p.suministros.push({id:nextId++,tipo:document.getElementById('s-tipo').value,periodo:perVal,periodoFecha:perVal,importe:imp,pagador:document.getElementById('s-pag').value,estado:document.getElementById('s-est').value,recurrente:document.getElementById('s-rec').checked});
   verSuministrosProp(propId);saveData();
 }
-function borrarSum(propId,sId){const p=propiedades.find(x=>x.id===propId);p.suministros=p.suministros.filter(s=>s.id!==sId);verSuministrosProp(propId);saveData();}
+function borrarSum(propId,sId){const p=propiedades.find(x=>x.id===propId);p.suministros=p.suministros.filter(s=>s.id!==sId);if(currentSection==='detalle'){window._dTab='suministros';renderDetalle(document.getElementById('main-content'));}else{verSuministrosProp(propId);}saveData();}
+function toggleEditSumDetalle(propId,sId){
+  const el=document.getElementById('edit-sum-det-'+sId);
+  if(el) el.style.display=el.style.display==='none'?'block':'none';
+}
+function guardarEditSumDetalle(propId,sId){
+  const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
+  if(!s) return;
+  const titEl=document.getElementById('esd-tit-'+sId);
+  const perEl=document.getElementById('esd-per-'+sId);
+  const fpEl=document.getElementById('esd-fp-'+sId);
+  if(titEl&&titEl.value.trim()) s.tipo=titEl.value.trim();
+  if(perEl&&perEl.value) s.periodoFecha=perEl.value;
+  if(fpEl&&fpEl.value){
+    s.fechaPago=fpEl.value;
+    s.estado='Pagado';
+  }
+  saveData();
+  window._dTab='suministros';renderDetalle(document.getElementById('main-content'));
+}
 function editarFechaSumDetalle(propId,sId){
-  const wrap=document.getElementById('fecha-det-'+sId);
-  if(wrap) wrap.style.display=wrap.style.display==='none'?'block':'none';
+  toggleEditSumDetalle(propId,sId);
 }
 function guardarFechaSumDetalle(propId,sId){
-  const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  const inp=document.getElementById('fecha-det-inp-'+sId);
-  if(s&&inp){s.fechaPago=inp.value;s.estado='Pagado';saveData();}
-  window._dTab='suministros';renderDetalle(document.getElementById('main-content'));
+  guardarEditSumDetalle(propId,sId);
 }
 
 function renderSuministrosGlobal(c){
@@ -1544,16 +1710,28 @@ function renderSuministrosGlobal(c){
       <div class="stat-box"><div class="stat-label">Pendientes</div><div class="stat-val ${pend>0?'red':''}">${pend}</div></div>
     </div>
     <div class="card">
-      ${todos.map(s=>`
-        <div class="list-item">
-          <div><div class="li-title">${s.tipo} — ${s.pNombre}</div><div class="li-sub">${s.periodo||''} · ${s.pagador}${s.fechaPago?' · pagado el '+s.fechaPago.slice(8,10):''}</div></div>
-          <div style="display:flex;align-items:center;gap:0.4rem;">
-            <span class="badge badge-${s.estado==='Pagado'?'green':'orange'}">${s.estado}</span>
-            <span style="font-weight:700;">${fmt(s.importe)}€</span>
-            <button onclick="toggleSumGlobal(${s.propId},${s.id})" style="background:none;border:none;cursor:pointer;font-size:1rem;">${s.estado==='Pagado'?'↩':'✓'}</button>
+      ${todos.map(s=>{
+        const per=mesConsumoSum(s);
+        const pagado=s.estado==='Pagado';
+        return`<div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.25rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div class="li-title">${s.tipo} — ${s.pNombre}</div>
+              <div class="li-sub" style="display:flex;flex-wrap:wrap;gap:0.3rem;align-items:center;margin-top:0.15rem;">
+                <span>${s.pagador}</span>
+                <span style="background:#ede9fe;color:#5b21b6;border-radius:10px;padding:0.1rem 0.4rem;font-size:0.68rem;font-weight:600;">📅 ${per.label}</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:0.4rem;">
+              <span class="badge badge-${pagado?'green':'orange'}">${pagado?'✓ Pagado':'⏳ Pend.'}</span>
+              <span style="font-weight:700;">${fmt(s.importe)}€</span>
+              <button onclick="toggleSumGlobal(${s.propId},${s.id})" style="background:none;border:none;cursor:pointer;font-size:1rem;" title="${pagado?'Deshacer pago':'Marcar pagado'}">${pagado?'↩':'✓'}</button>
+            </div>
           </div>
-        </div>
-      `).join('')}
+          ${pagado&&s.fechaPago?`<div style="font-size:0.71rem;color:#065f46;background:#f0fdf4;border-radius:5px;padding:0.15rem 0.45rem;">✅ Pagado el ${fmtFechaPago(s.fechaPago)}</div>`:''}
+          ${!pagado?`<div style="font-size:0.71rem;color:#9a3412;background:#fff7ed;border-radius:5px;padding:0.15rem 0.45rem;">⏳ Pendiente de pago · consumo ${per.label}</div>`:''}
+        </div>`;
+      }).join('')}
     </div>`;
 }
 function toggleSumGlobal(propId,sId){
