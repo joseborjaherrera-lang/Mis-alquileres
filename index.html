@@ -1799,25 +1799,118 @@ function toggleSumGlobal(propId,sId){
 function renderInquilinos(c){
   const inqs=[];
   propiedades.forEach(p=>{
-    if(p.tipo==='habitaciones')p.habitaciones.filter(h=>h.inquilino).forEach(h=>inqs.push({nombre:h.inquilino,tel:h.telefono,email:h.email,alquiler:h.alquiler,prop:p.nombre,hab:'Hab. '+h.num,entrada:h.entrada,fin:h.finContrato,cobrado:h.cobrado}));
-    else(p.ingresos||[]).filter(ig=>ig.inquilino).forEach(ig=>inqs.push({nombre:ig.inquilino,tel:'',email:'',alquiler:ig.importe,prop:p.nombre,hab:'Piso completo',entrada:ig.entrada||'',fin:ig.finContrato||'',cobrado:ig.cobrado}));
+    const sums=p.suministros||[];
+    if(p.tipo==='habitaciones')p.habitaciones.filter(h=>h.inquilino).forEach(h=>inqs.push({nombre:h.inquilino,tel:h.telefono,email:h.email,alquiler:h.alquiler,prop:p.nombre,propId:p.id,habId:h.id,igId:null,hab:'Hab. '+h.num,entrada:h.entrada,fin:h.finContrato,cobrado:h.cobrado,fechaCobro:h.fechaCobro||'',notas:h.notas||'',suministros:sums}));
+    else(p.ingresos||[]).filter(ig=>ig.inquilino).forEach(ig=>inqs.push({nombre:ig.inquilino,tel:ig.telefono||'',email:ig.email||'',alquiler:ig.importe,prop:p.nombre,propId:p.id,habId:null,igId:ig.id,hab:'Piso completo',entrada:ig.entrada||'',fin:ig.finContrato||'',cobrado:ig.cobrado,fechaCobro:ig.fechaCobro||'',notas:'',suministros:sums}));
   });
   if(!inqs.length){c.innerHTML=`<div class="empty"><div class="empty-icon">👥</div><p>Sin inquilinos registrados.<br>Añádelos desde cada propiedad.</p></div>`;return;}
-  c.innerHTML=inqs.map(i=>`
-    <div class="card">
+  c.innerHTML=inqs.map(i=>{
+    const hoy=new Date();
+    const fin=i.fin?new Date(i.fin):null;
+    const diasFin=fin?Math.ceil((fin-hoy)/(1000*60*60*24)):null;
+    // Suministros desglose
+    const sums=i.suministros||[];
+    let sumsHTML='';
+    if(sums.length){
+      sumsHTML=`<div style="margin-top:0.6rem;padding-top:0.6rem;border-top:1px solid #f0f0f0;">
+        <div style="font-size:0.72rem;font-weight:700;color:#888;margin-bottom:0.35rem;">💡 Suministros</div>
+        ${sums.map(s=>{
+          const per=mesConsumoSum(s);
+          const pagado=s.estado==='Pagado';
+          return`<div style="display:flex;justify-content:space-between;align-items:center;padding:0.22rem 0;border-bottom:1px solid #f9f9f9;">
+            <div>
+              <span style="font-size:0.8rem;font-weight:600;">${s.tipo}</span>
+              <span style="font-size:0.68rem;color:#888;margin-left:0.3rem;">${s.pagador==='Inquilino'?'(inquilino)':'(propietario)'}</span>
+              <div style="font-size:0.68rem;color:#6b7280;">📅 ${per.label}</div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.15rem;">
+              <span style="font-size:0.78rem;font-weight:700;">${fmt(s.importe)}€</span>
+              <span onclick="toggleSumInquilinos(${i.propId},${s.id})" style="cursor:pointer;display:inline-block;padding:0.15rem 0.45rem;border-radius:10px;font-size:0.68rem;font-weight:600;background:${pagado?'#d1fae5':'#ffedd5'};color:${pagado?'#065f46':'#9a3412'};">${pagado?'✓ Pagado ↩':'⏳ Pend. ✓'}</span>
+              ${pagado&&s.fechaPago?`<span style="font-size:0.65rem;color:#065f46;">el ${fmtFechaPago(s.fechaPago)}</span>`:''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
+    // Formulario de edición inline
+    const editId=`inq-edit-${i.propId}-${i.habId||i.igId}`;
+    const editForm=`<div id="${editId}" style="display:none;margin-top:0.6rem;padding-top:0.6rem;border-top:1px solid #e5e7eb;background:#f8fafc;border-radius:8px;padding:0.6rem;">
+      <div style="font-size:0.72rem;font-weight:700;color:#888;margin-bottom:0.4rem;">✏️ Editar inquilino</div>
+      <div style="display:flex;flex-direction:column;gap:0.3rem;">
+        <div style="display:flex;gap:0.4rem;align-items:center;">
+          <span style="font-size:0.7rem;color:#666;min-width:56px;">Nombre</span>
+          <input id="ei-nom-${i.propId}-${i.habId||i.igId}" type="text" value="${i.nombre}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
+        </div>
+        <div style="display:flex;gap:0.4rem;align-items:center;">
+          <span style="font-size:0.7rem;color:#666;min-width:56px;">Teléfono</span>
+          <input id="ei-tel-${i.propId}-${i.habId||i.igId}" type="tel" value="${i.tel}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
+        </div>
+        <div style="display:flex;gap:0.4rem;align-items:center;">
+          <span style="font-size:0.7rem;color:#666;min-width:56px;">Email</span>
+          <input id="ei-email-${i.propId}-${i.habId||i.igId}" type="email" value="${i.email}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
+        </div>
+        <div style="display:flex;gap:0.4rem;align-items:center;">
+          <span style="font-size:0.7rem;color:#666;min-width:56px;">Alquiler</span>
+          <input id="ei-alq-${i.propId}-${i.habId||i.igId}" type="number" value="${i.alquiler}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
+        </div>
+        <div style="display:flex;gap:0.4rem;align-items:center;">
+          <span style="font-size:0.7rem;color:#666;min-width:56px;">Entrada</span>
+          <input id="ei-ent-${i.propId}-${i.habId||i.igId}" type="date" value="${i.entrada}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
+        </div>
+        <div style="display:flex;gap:0.4rem;align-items:center;">
+          <span style="font-size:0.7rem;color:#666;min-width:56px;">Fin cont.</span>
+          <input id="ei-fin-${i.propId}-${i.habId||i.igId}" type="date" value="${i.fin}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
+        </div>
+        <div style="display:flex;gap:0.3rem;margin-top:0.2rem;">
+          <button onclick="guardarEditInquilino(${i.propId},${i.habId||'null'},${i.igId||'null'})" style="background:#1a1a1a;color:white;border:none;border-radius:5px;padding:0.3rem 0.7rem;font-size:0.78rem;cursor:pointer;flex:1;">✓ Guardar</button>
+          <button onclick="document.getElementById('${editId}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:5px;color:#6b7280;cursor:pointer;font-size:0.78rem;padding:0.3rem 0.5rem;">✕</button>
+        </div>
+      </div>
+    </div>`;
+    return`<div class="card">
       <div class="card-header">
         <div><div class="card-title">${i.nombre}</div><div class="card-subtitle">${i.prop} · ${i.hab}</div></div>
         <div style="display:flex;flex-direction:column;gap:0.25rem;align-items:flex-end;">
           <span class="badge badge-green">${fmt(i.alquiler)}€/mes</span>
           <span class="badge badge-${i.cobrado?'green':'orange'}">${i.cobrado?'✓ Cobrado':'⏳ Pendiente'}</span>
+          <button onclick="document.getElementById('${editId}').style.display=document.getElementById('${editId}').style.display==='none'?'block':'none'" style="background:#f3f4f6;border:none;border-radius:6px;padding:0.2rem 0.5rem;font-size:0.72rem;cursor:pointer;color:#6b7280;margin-top:0.1rem;">✏️ Editar</button>
         </div>
       </div>
       ${i.tel?`<div class="dr"><span class="lbl">📞</span><span class="val">${i.tel}</span></div>`:''}
       ${i.email?`<div class="dr"><span class="lbl">✉️</span><span class="val">${i.email}</span></div>`:''}
       ${i.entrada?`<div class="dr"><span class="lbl">📅 Entrada</span><span class="val">${i.entrada}</span></div>`:''}
-      ${i.fin?`<div class="dr"><span class="lbl">🏁 Fin contrato</span><span class="val">${i.fin}</span></div>`:''}
-    </div>
-  `).join('');
+      ${i.fin?`<div class="dr"><span class="lbl">🏁 Fin contrato</span><span class="val" style="color:${diasFin!==null&&diasFin<=60?'#9a3412':'inherit'}">${i.fin}${diasFin!==null?' ('+diasFin+'d)':''}</span></div>`:''}
+      ${i.fechaCobro?`<div class="dr"><span class="lbl">💶 Último cobro</span><span class="val" style="color:${i.cobrado?'#065f46':'#9a3412'}">${i.fechaCobro}</span></div>`:''}
+      ${sumsHTML}
+      ${editForm}
+    </div>`;
+  }).join('');
+}
+
+function toggleSumInquilinos(propId,sId){
+  const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
+  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;}
+  renderSection(currentSection);saveData();
+}
+
+function guardarEditInquilino(propId,habId,igId){
+  const p=propiedades.find(x=>x.id===propId);
+  if(!p) return;
+  const key=propId+'-'+(habId||igId);
+  const nom=document.getElementById('ei-nom-'+key).value.trim();
+  const tel=document.getElementById('ei-tel-'+key).value.trim();
+  const email=document.getElementById('ei-email-'+key).value.trim();
+  const alq=parseFloat(document.getElementById('ei-alq-'+key).value)||0;
+  const entrada=document.getElementById('ei-ent-'+key).value;
+  const fin=document.getElementById('ei-fin-'+key).value;
+  if(habId&&habId!=='null'){
+    const h=p.habitaciones.find(x=>x.id===habId);
+    if(h){h.inquilino=nom;h.telefono=tel;h.email=email;h.alquiler=alq;h.entrada=entrada;h.finContrato=fin;}
+  } else if(igId&&igId!=='null'){
+    const ig=(p.ingresos||[]).find(x=>x.id===igId);
+    if(ig){ig.inquilino=nom;ig.telefono=tel;ig.email=email;ig.importe=alq;ig.entrada=entrada;ig.finContrato=fin;}
+  }
+  saveData();renderSection(currentSection);
 }
 
 // ── IPC MODAL ─────────────────────────────────────────
