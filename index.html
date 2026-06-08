@@ -1179,6 +1179,9 @@ function renderDetalle(cont){
       </label></div>`;
   }
 
+  if(tab==='seguros') tabContent=renderSegurosTab(p);
+  if(tab==='documentos') tabContent=renderDocumentosTab(p);
+
   cont.innerHTML=`
     <button class="detail-back" onclick="navigate('propiedades')">← Propiedades</button>
     <div class="card" style="margin-bottom:0.8rem;">
@@ -1193,6 +1196,8 @@ function renderDetalle(cont){
       <button class="tab-btn ${tab==='gastos'?'active':''}" onclick="window._dTab='gastos';renderDetalle(document.getElementById('main-content'))">💸 Gastos</button>
       <button class="tab-btn ${tab==='suministros'?'active':''}" onclick="window._dTab='suministros';renderDetalle(document.getElementById('main-content'))">💡 Sumin.</button>
       <button class="tab-btn ${tab==='contrato'?'active':''}" onclick="window._dTab='contrato';renderDetalle(document.getElementById('main-content'))">📄 Contrato</button>
+      <button class="tab-btn ${tab==='seguros'?'active':''}" onclick="window._dTab='seguros';renderDetalle(document.getElementById('main-content'))">🛡️ Seguros</button>
+      <button class="tab-btn ${tab==='documentos'?'active':''}" onclick="window._dTab='documentos';renderDetalle(document.getElementById('main-content'))">📋 Docs</button>
     </div>
     ${tabContent}`;
 }
@@ -2419,6 +2424,250 @@ ${propTablas}
   const a=document.createElement('a');
   a.href=url;a.download='informe_gestoria_'+_gAnio+'.html';a.click();
   URL.revokeObjectURL(url);
+}
+
+// ── SEGUROS ────────────────────────────────────────────
+const TIPOS_SEGURO=['hogar','alquiler','vida'];
+const LABELS_SEGURO={'hogar':'🏠 Seguro Hogar','alquiler':'🔑 Seguro Alquiler','vida':'❤️ Seguro de Vida'};
+const PERIODOS_PAGO=['Mensual','Trimestral','Semestral','Anual'];
+
+function getSegurosProp(p){
+  if(!p.seguros) p.seguros={hogar:{},alquiler:{},vida:{}};
+  TIPOS_SEGURO.forEach(t=>{if(!p.seguros[t])p.seguros[t]={};});
+  return p.seguros;
+}
+
+function renderSegurosTab(p){
+  const seg=getSegurosProp(p);
+  let html='';
+  TIPOS_SEGURO.forEach(tipo=>{
+    const s=seg[tipo]||{};
+    const activo=s.compania||s.importe;
+    html+=`
+    <div style="background:#fff;border-radius:12px;border:1.5px solid ${activo?'#3b82f6':'#e5e7eb'};margin-bottom:0.8rem;overflow:hidden;">
+      <div style="background:${activo?'#eff6ff':'#f9fafb'};padding:0.65rem 1rem;display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="toggleSeguroForm(${p.id},'${tipo}')">
+        <span style="font-weight:700;font-size:0.92rem;">${LABELS_SEGURO[tipo]}</span>
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          ${activo?`<span style="font-size:0.72rem;background:#dbeafe;color:#1e40af;padding:0.15rem 0.5rem;border-radius:10px;font-weight:600;">${s.compania||'—'} · ${s.importe?s.importe+'€':'—'}</span>`:'<span style="font-size:0.72rem;color:#aaa;">Sin datos</span>'}
+          <span style="font-size:0.8rem;color:#6b7280;" id="seg-ico-${p.id}-${tipo}">✏️</span>
+        </div>
+      </div>
+      <div id="seg-form-${p.id}-${tipo}" style="display:none;padding:0.8rem 1rem;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-bottom:0.6rem;">
+          <div>
+            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Compañía aseguradora</div>
+            <input id="sf-comp-${p.id}-${tipo}" type="text" value="${s.compania||''}" placeholder="Ej: Mapfre" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+          </div>
+          <div>
+            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Teléfono de contacto</div>
+            <input id="sf-tel-${p.id}-${tipo}" type="tel" value="${s.telefono||''}" placeholder="900 000 000" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+          </div>
+          <div>
+            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Importe (€)</div>
+            <input id="sf-imp-${p.id}-${tipo}" type="number" value="${s.importe||''}" placeholder="0" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+          </div>
+          <div>
+            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Periodicidad de pago</div>
+            <select id="sf-per-${p.id}-${tipo}" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;">
+              ${PERIODOS_PAGO.map(pp=>`<option value="${pp}" ${s.periodo===pp?'selected':''}>${pp}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Próximo pago</div>
+            <input id="sf-pago-${p.id}-${tipo}" type="date" value="${s.proximoPago||''}" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+          </div>
+          <div>
+            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Fecha de renovación</div>
+            <input id="sf-ren-${p.id}-${tipo}" type="date" value="${s.renovacion||''}" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+          </div>
+        </div>
+        <div style="margin-bottom:0.6rem;">
+          <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Número de póliza</div>
+          <input id="sf-pol-${p.id}-${tipo}" type="text" value="${s.poliza||''}" placeholder="Nº póliza / referencia" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+        </div>
+        <div style="margin-bottom:0.8rem;">
+          <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Notas / cobertura</div>
+          <textarea id="sf-not-${p.id}-${tipo}" rows="2" placeholder="Coberturas, condiciones especiales..." style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;resize:none;">${s.notas||''}</textarea>
+        </div>
+        <div style="display:flex;gap:0.5rem;">
+          <button onclick="guardarSeguro(${p.id},'${tipo}')" style="background:#1a1a1a;color:#fff;border:none;border-radius:8px;padding:0.45rem 1rem;font-size:0.82rem;font-weight:600;cursor:pointer;flex:1;">✓ Guardar</button>
+          <button onclick="document.getElementById('seg-form-${p.id}-${tipo}').style.display='none'" style="background:none;border:1.5px solid #e0e0e0;border-radius:8px;padding:0.45rem 0.8rem;font-size:0.82rem;cursor:pointer;color:#6b7280;">✕</button>
+        </div>
+      </div>
+      ${activo?`
+      <div style="padding:0 1rem 0.7rem;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;font-size:0.75rem;">
+          ${s.poliza?`<div style="color:#6b7280;">📋 Póliza: <strong>${s.poliza}</strong></div>`:''}
+          ${s.periodo?`<div style="color:#6b7280;">🔄 Pago: <strong>${s.periodo}</strong></div>`:''}
+          ${s.telefono?`<div style="color:#6b7280;">📞 <strong>${s.telefono}</strong></div>`:''}
+          ${s.proximoPago?`<div style="color:#1e40af;">💳 Próx. pago: <strong>${fmtFechaPago(s.proximoPago)}</strong></div>`:''}
+          ${s.renovacion?`<div style="color:#9a3412;">🔔 Renovación: <strong>${fmtFechaPago(s.renovacion)}</strong></div>`:''}
+        </div>
+        ${s.notas?`<div style="margin-top:0.3rem;font-size:0.73rem;color:#6b7280;background:#f8f8f8;border-radius:6px;padding:0.3rem 0.5rem;">${s.notas}</div>`:''}
+      </div>`:''
+    }
+    </div>`;
+  });
+  return html||'<div class="empty"><div class="empty-icon">🛡️</div><p>Toca cada seguro para añadir datos</p></div>';
+}
+
+function toggleSeguroForm(propId,tipo){
+  const el=document.getElementById('seg-form-'+propId+'-'+tipo);
+  if(el) el.style.display=el.style.display==='none'?'block':'none';
+}
+
+function guardarSeguro(propId,tipo){
+  const p=propiedades.find(x=>x.id===propId);
+  if(!p) return;
+  if(!p.seguros) p.seguros={};
+  if(!p.seguros[tipo]) p.seguros[tipo]={};
+  const s=p.seguros[tipo];
+  s.compania=document.getElementById('sf-comp-'+propId+'-'+tipo).value.trim();
+  s.telefono=document.getElementById('sf-tel-'+propId+'-'+tipo).value.trim();
+  s.importe=parseFloat(document.getElementById('sf-imp-'+propId+'-'+tipo).value)||null;
+  s.periodo=document.getElementById('sf-per-'+propId+'-'+tipo).value;
+  s.proximoPago=document.getElementById('sf-pago-'+propId+'-'+tipo).value||null;
+  s.renovacion=document.getElementById('sf-ren-'+propId+'-'+tipo).value||null;
+  s.poliza=document.getElementById('sf-pol-'+propId+'-'+tipo).value.trim();
+  s.notas=document.getElementById('sf-not-'+propId+'-'+tipo).value.trim();
+  saveData();
+  window._dTab='seguros';
+  renderDetalle(document.getElementById('main-content'));
+}
+
+// ── DOCUMENTOS ─────────────────────────────────────────
+function renderDocumentosTab(p){
+  if(!p.documentos) p.documentos={};
+  const d=p.documentos;
+  let html=`
+  <div style="background:#fff;border-radius:12px;border:1.5px solid #e5e7eb;margin-bottom:0.8rem;overflow:hidden;">
+    <div style="background:#f8f8f8;padding:0.65rem 1rem;font-weight:700;font-size:0.92rem;">📜 Nota Simple</div>
+    <div style="padding:0.8rem 1rem;">
+      <div style="margin-bottom:0.6rem;">
+        <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Referencia / Nº Registro</div>
+        <input id="doc-ns-ref-${p.id}" type="text" value="${d.notaSimpleRef||''}" placeholder="Nº de referencia registral" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+      </div>
+      <div style="margin-bottom:0.6rem;">
+        <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Fecha de obtención</div>
+        <input id="doc-ns-fecha-${p.id}" type="date" value="${d.notaSimpleFecha||''}" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+      </div>
+      <div style="margin-bottom:0.6rem;">
+        <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Notas / observaciones</div>
+        <textarea id="doc-ns-notas-${p.id}" rows="2" placeholder="Cargas, hipotecas registradas, anotaciones..." style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;resize:none;">${d.notaSimpleNotas||''}</textarea>
+      </div>
+      <div style="margin-bottom:0.8rem;">
+        <div style="font-size:0.7rem;color:#666;margin-bottom:0.3rem;">Archivo (PDF/imagen)</div>
+        ${d.notaSimpleDoc?`
+        <div style="display:flex;align-items:center;gap:0.5rem;background:#f0fdf4;border-radius:8px;padding:0.45rem 0.7rem;">
+          <span style="font-size:0.8rem;font-weight:600;color:#065f46;">📄 ${d.notaSimpleDoc.nombre}</span>
+          <span style="font-size:0.72rem;color:#888;">${d.notaSimpleDoc.fecha}</span>
+          <a href="${d.notaSimpleDoc.data}" download="${d.notaSimpleDoc.nombre}" style="margin-left:auto;background:#1a1a1a;color:#fff;text-decoration:none;padding:0.2rem 0.6rem;border-radius:6px;font-size:0.72rem;">⬇️</a>
+          <button onclick="borrarDocProp(${p.id},'notaSimpleDoc')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:0.9rem;">✕</button>
+        </div>`:
+        `<label style="display:inline-flex;align-items:center;gap:0.4rem;background:#f3f4f6;border:1.5px dashed #d1d5db;border-radius:8px;padding:0.45rem 0.8rem;cursor:pointer;font-size:0.82rem;color:#6b7280;">
+          📎 Subir nota simple
+          <input type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" style="display:none;" onchange="subirDocProp(${p.id},'notaSimpleDoc',this)"/>
+        </label>`}
+      </div>
+      <button onclick="guardarDocumentos(${p.id})" style="background:#1a1a1a;color:#fff;border:none;border-radius:8px;padding:0.45rem 1rem;font-size:0.82rem;font-weight:600;cursor:pointer;width:100%;">✓ Guardar datos Nota Simple</button>
+    </div>
+  </div>
+
+  <div style="background:#fff;border-radius:12px;border:1.5px solid #e5e7eb;margin-bottom:0.8rem;overflow:hidden;">
+    <div style="background:#f8f8f8;padding:0.65rem 1rem;font-weight:700;font-size:0.92rem;">🗺️ Referencia Catastral</div>
+    <div style="padding:0.8rem 1rem;">
+      <div style="margin-bottom:0.6rem;">
+        <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Referencia catastral</div>
+        <input id="doc-cat-ref-${p.id}" type="text" value="${d.catastralRef||''}" placeholder="Ej: 1234567AB1234A0001LM" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;font-family:monospace;letter-spacing:0.05em;"/>
+      </div>
+      <div style="margin-bottom:0.6rem;">
+        <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Uso catastral</div>
+        <input id="doc-cat-uso-${p.id}" type="text" value="${d.catastralUso||''}" placeholder="Ej: Residencial, Comercial..." style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-bottom:0.6rem;">
+        <div>
+          <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Superficie construida (m²)</div>
+          <input id="doc-cat-sup-${p.id}" type="number" value="${d.catastralSuperficie||''}" placeholder="0" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+        </div>
+        <div>
+          <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Valor catastral (€)</div>
+          <input id="doc-cat-val-${p.id}" type="number" value="${d.catastralValor||''}" placeholder="0" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
+        </div>
+      </div>
+      <div style="margin-bottom:0.6rem;">
+        <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Notas</div>
+        <textarea id="doc-cat-notas-${p.id}" rows="2" placeholder="Observaciones catastrales..." style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;resize:none;">${d.catastralNotas||''}</textarea>
+      </div>
+      <div style="margin-bottom:0.8rem;">
+        <div style="font-size:0.7rem;color:#666;margin-bottom:0.3rem;">Archivo (PDF/imagen)</div>
+        ${d.catastralDoc?`
+        <div style="display:flex;align-items:center;gap:0.5rem;background:#f0fdf4;border-radius:8px;padding:0.45rem 0.7rem;">
+          <span style="font-size:0.8rem;font-weight:600;color:#065f46;">📄 ${d.catastralDoc.nombre}</span>
+          <span style="font-size:0.72rem;color:#888;">${d.catastralDoc.fecha}</span>
+          <a href="${d.catastralDoc.data}" download="${d.catastralDoc.nombre}" style="margin-left:auto;background:#1a1a1a;color:#fff;text-decoration:none;padding:0.2rem 0.6rem;border-radius:6px;font-size:0.72rem;">⬇️</a>
+          <button onclick="borrarDocProp(${p.id},'catastralDoc')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:0.9rem;">✕</button>
+        </div>`:
+        `<label style="display:inline-flex;align-items:center;gap:0.4rem;background:#f3f4f6;border:1.5px dashed #d1d5db;border-radius:8px;padding:0.45rem 0.8rem;cursor:pointer;font-size:0.82rem;color:#6b7280;">
+          📎 Subir referencia catastral
+          <input type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" style="display:none;" onchange="subirDocProp(${p.id},'catastralDoc',this)"/>
+        </label>`}
+      </div>
+      <button onclick="guardarDocumentos(${p.id})" style="background:#1a1a1a;color:#fff;border:none;border-radius:8px;padding:0.45rem 1rem;font-size:0.82rem;font-weight:600;cursor:pointer;width:100%;">✓ Guardar datos Catastro</button>
+    </div>
+  </div>`;
+  return html;
+}
+
+function guardarDocumentos(propId){
+  const p=propiedades.find(x=>x.id===propId);
+  if(!p) return;
+  if(!p.documentos) p.documentos={};
+  const d=p.documentos;
+  // Nota Simple
+  const nsRef=document.getElementById('doc-ns-ref-'+propId);
+  const nsFecha=document.getElementById('doc-ns-fecha-'+propId);
+  const nsNotas=document.getElementById('doc-ns-notas-'+propId);
+  if(nsRef) d.notaSimpleRef=nsRef.value.trim();
+  if(nsFecha) d.notaSimpleFecha=nsFecha.value||null;
+  if(nsNotas) d.notaSimpleNotas=nsNotas.value.trim();
+  // Catastral
+  const catRef=document.getElementById('doc-cat-ref-'+propId);
+  const catUso=document.getElementById('doc-cat-uso-'+propId);
+  const catSup=document.getElementById('doc-cat-sup-'+propId);
+  const catVal=document.getElementById('doc-cat-val-'+propId);
+  const catNotas=document.getElementById('doc-cat-notas-'+propId);
+  if(catRef) d.catastralRef=catRef.value.trim();
+  if(catUso) d.catastralUso=catUso.value.trim();
+  if(catSup) d.catastralSuperficie=parseFloat(catSup.value)||null;
+  if(catVal) d.catastralValor=parseFloat(catVal.value)||null;
+  if(catNotas) d.catastralNotas=catNotas.value.trim();
+  saveData();
+  window._dTab='documentos';
+  renderDetalle(document.getElementById('main-content'));
+  showToast('✓ Guardado');
+}
+
+function subirDocProp(propId,campo,input){
+  const file=input.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    const p=propiedades.find(x=>x.id===propId);
+    if(!p.documentos) p.documentos={};
+    p.documentos[campo]={nombre:file.name,data:e.target.result,fecha:new Date().toLocaleDateString('es-ES')};
+    saveData();
+    window._dTab='documentos';
+    renderDetalle(document.getElementById('main-content'));
+  };
+  reader.readAsDataURL(file);
+}
+
+function borrarDocProp(propId,campo){
+  if(!confirm('¿Eliminar este documento?'))return;
+  const p=propiedades.find(x=>x.id===propId);
+  if(p.documentos) delete p.documentos[campo];
+  saveData();
+  window._dTab='documentos';
+  renderDetalle(document.getElementById('main-content'));
 }
 
 // ── MODAL ─────────────────────────────────────────────
