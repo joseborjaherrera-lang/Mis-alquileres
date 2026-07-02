@@ -163,6 +163,17 @@ const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {auth:{persistSess
 let currentUser=null, currentSection='resumen', nextId=1000, authMode='login', _sc=0;
 const MES_ACTUAL=new Date().getMonth()+1, ANIO_ACTUAL=new Date().getFullYear();
 const NOMBRES_MES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+// Mes de alquiler al que corresponde un pago que se marca hoy (formato AAAA-MM)
+function mesCorrespondiente(){return ANIO_ACTUAL+'-'+String(MES_ACTUAL).padStart(2,'0');}
+// Formatea un valor AAAA-MM a "Julio 2026". Si no hay valor, cadena vacía.
+function fmtMesCobro(mc){
+  if(!mc||typeof mc!=='string'||mc.indexOf('-')<0)return'';
+  const[a,m]=mc.split('-');const idx=parseInt(m,10)-1;
+  if(idx<0||idx>11)return'';
+  return NOMBRES_MES[idx]+' '+a;
+}
+// Formatea una fecha ISO (AAAA-MM-DD) a "03/08"
+function fmtDiaMes(f){if(!f||f.length<10)return'';return f.slice(8,10)+'/'+f.slice(5,7);}
 let propiedades=[];
 
 // ── SYNC ──────────────────────────────────────────────
@@ -198,15 +209,55 @@ async function loadFromCloud(){
   }catch(e){}
 }
 
+function migrarMesCobro(){
+  // Rellena mesCobro en datos antiguos (pagados antes de existir este campo),
+  // derivándolo de la fecha de pago ya guardada (AAAA-MM).
+  const derivar=(f)=>f&&f.length>=7?f.slice(0,7):null;
+  let cambiado=false;
+  propiedades.forEach(p=>{
+    (p.habitaciones||[]).forEach(h=>{if(h&&h.cobrado&&!h.mesCobro&&h.fechaCobro){h.mesCobro=derivar(h.fechaCobro);cambiado=true;}});
+    (p.ingresos||[]).forEach(ig=>{if(ig&&ig.cobrado&&!ig.mesCobro&&ig.fechaCobro){ig.mesCobro=derivar(ig.fechaCobro);cambiado=true;}});
+    (p.suministros||[]).forEach(s=>{if(s&&s.estado==='Pagado'&&!s.mesCobro&&s.fechaPago){s.mesCobro=derivar(s.fechaPago);cambiado=true;}});
+  });
+  if(cambiado)saveData();
+}
+
 function checkResetMensual(){
+  migrarMesCobro();
+  // Reset automático del día 1 (al abrir la app en un mes nuevo).
+  // Regla: al empezar un mes, todo cobro/suministro cuya ÚLTIMA fecha de pago
+  // no pertenezca al mes actual vuelve a salir como pendiente.
+  // Lo que ya estaba pendiente sigue pendiente (se mezcla, sin distinguir atrasos).
+  // Lo pagado ESTE mes se conserva como pagado.
   try{
     const claveMes=ANIO_ACTUAL+'-'+MES_ACTUAL;
     if(localStorage.getItem('alq_ultimo_reset')===claveMes)return;
+    const esDelMesActual=(f)=>{
+      if(!f)return false;
+      const d=new Date(f);
+      return d.getFullYear()===ANIO_ACTUAL&&(d.getMonth()+1)===MES_ACTUAL;
+    };
     propiedades.forEach(p=>{
       try{
-        if(p.tipo==='habitaciones'){(p.habitaciones||[]).forEach(h=>{if(h&&h.inquilino){h.cobrado=false;h.fechaCobro=null;}});}
-        else{(p.ingresos||[]).forEach(ig=>{if(ig&&(ig.inquilino||ig.concepto==='Alquiler')){ig.cobrado=false;ig.fechaCobro=null;}});}
-        (p.suministros||[]).forEach(s=>{if(s&&s.recurrente&&s.estado==='Pagado'){s.estado='Pendiente';s.fechaPago=null;}});
+        if(p.tipo==='habitaciones'){
+          (p.habitaciones||[]).forEach(h=>{
+            if(!h||!h.inquilino)return;
+            // Compatibilidad: si estaba cobrado sin fecha, se le pone la fecha actual (se respeta este mes)
+            if(h.cobrado&&!h.fechaCobro)h.fechaCobro=new Date().toISOString().slice(0,10);
+            if(!esDelMesActual(h.fechaCobro)){h.cobrado=false;h.fechaCobro=null;h.mesCobro=null;}
+          });
+        }else{
+          (p.ingresos||[]).forEach(ig=>{
+            if(!ig||!(ig.inquilino||ig.concepto==='Alquiler'))return;
+            if(ig.cobrado&&!ig.fechaCobro)ig.fechaCobro=new Date().toISOString().slice(0,10);
+            if(!esDelMesActual(ig.fechaCobro)){ig.cobrado=false;ig.fechaCobro=null;ig.mesCobro=null;}
+          });
+        }
+        (p.suministros||[]).forEach(s=>{
+          if(!s||!s.recurrente||s.estado!=='Pagado')return;
+          if(!s.fechaPago)s.fechaPago=new Date().toISOString().slice(0,10);
+          if(!esDelMesActual(s.fechaPago)){s.estado='Pendiente';s.fechaPago=null;s.mesCobro=null;}
+        });
       }catch(e){}
     });
     localStorage.setItem('alq_ultimo_reset',claveMes);
@@ -452,11 +503,11 @@ function getAlertas(){
     // Cobros pendientes
     if(p.tipo==='habitaciones'){
       p.habitaciones.filter(h=>h.inquilino&&!h.cobrado).forEach(h=>{
-        alertas.push({tipo:'cobro',prop:p.nombre,inquilino:h.inquilino,importe:h.alquiler,propId:p.id,habId:h.id,mes:MES_ACTUAL,anio:ANIO_ACTUAL});
+        alertas.push({tipo:'cobro',prop:p.nombre,inquilino:h.inquilino,importe:importeConIPC(h.alquiler,h.entrada),propId:p.id,habId:h.id,mes:MES_ACTUAL,anio:ANIO_ACTUAL});
       });
     }else{
       (p.ingresos||[]).filter(ig=>!ig.cobrado&&ig.importe>0).forEach(ig=>{
-        alertas.push({tipo:'cobro',prop:p.nombre,inquilino:ig.inquilino||'Alquiler',importe:ig.importe,propId:p.id,igId:ig.id,mes:MES_ACTUAL,anio:ANIO_ACTUAL});
+        alertas.push({tipo:'cobro',prop:p.nombre,inquilino:ig.inquilino||'Alquiler',importe:importeConIPC(ig.importe,ig.entrada),propId:p.id,igId:ig.id,mes:MES_ACTUAL,anio:ANIO_ACTUAL});
       });
     }
   });
@@ -698,8 +749,8 @@ let _resumenAnio=ANIO_ACTUAL;
 let _mesDesplegado=null;
 let _mesEditando=null;
 
-let _modoSocio=false;
-function toggleModoSocio(){_modoSocio=!_modoSocio;renderSection(currentSection);}
+let _modoSocio=true; // Siempre mostrar solo mi parte (fijo, no se puede ver el total con socios)
+function toggleModoSocio(){/* desactivado: siempre se muestra solo mi parte */}
 // Selecciona el valor total o "mi parte" según el modo activo.
 // d es un objeto de calcMes; campo es 'ingresos','gastos' o 'neto'.
 function V(d,campo){
@@ -907,9 +958,9 @@ function renderResumen(c){
     </div>
 
     <div style="display:flex;justify-content:center;margin-bottom:0.6rem;">
-      <button onclick="toggleModoSocio()" style="background:${_modoSocio?'#ede9fe':'#f3f4f6'};border:1px solid ${_modoSocio?'#c4b5fd':'#e5e7eb'};border-radius:20px;padding:0.35rem 0.9rem;cursor:pointer;font-size:0.75rem;font-weight:600;color:${_modoSocio?'#5b21b6':'#6b7280'};">
-        ${_modoSocio?'👥 Mostrando: solo mi parte':'🏠 Mostrando: total propiedades'} · tocar para cambiar
-      </button>
+      <span style="background:#ede9fe;border:1px solid #c4b5fd;border-radius:20px;padding:0.35rem 0.9rem;font-size:0.75rem;font-weight:600;color:#5b21b6;">
+        👥 Mostrando: solo mi parte
+      </span>
     </div>
 
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.4rem;margin-bottom:0.4rem;">
@@ -941,7 +992,7 @@ function toggleSumResumen(propId,sId,e){
   e.stopPropagation();
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
   if(!s)return;
-  s.estado='Pagado';s.fechaPago=new Date().toISOString().slice(0,10);
+  s.estado='Pagado';s.fechaPago=new Date().toISOString().slice(0,10);s.mesCobro=mesCorrespondiente();
   saveData();
   const pill=document.getElementById('sp-'+propId+'-'+sId);
   if(pill){pill.className='estado-pill pill-ok';pill.style.cursor='default';pill.onclick=null;pill.textContent='✓ '+s.tipo+' día '+s.fechaPago.slice(8,10);}
@@ -958,8 +1009,8 @@ function marcarCobroPendiente(propId,habId,igId){
   const hoy=new Date().toISOString().slice(0,10);
   const fecha=prompt('¿Qué día se realizó el pago? (AAAA-MM-DD)',hoy);
   if(!fecha) return;
-  if(habId){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=true;h.fechaCobro=fecha;}}
-  else if(igId){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=true;ig.fechaCobro=fecha;}}
+  if(habId){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=true;h.fechaCobro=fecha;h.mesCobro=mesCorrespondiente();}}
+  else if(igId){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=true;ig.fechaCobro=fecha;ig.mesCobro=mesCorrespondiente();}}
   renderSection(currentSection);saveData();
 }
 function marcarCobroDesdeAlerta(propId,habId,igId,pill){
@@ -967,8 +1018,8 @@ function marcarCobroDesdeAlerta(propId,habId,igId,pill){
   const p=propiedades.find(x=>x.id===propId);
   if(!p) return;
   const fecha=new Date().toISOString().slice(0,10);
-  if(habId&&habId!=='null'){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=true;h.fechaCobro=fecha;}}
-  else if(igId&&igId!=='null'){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=true;ig.fechaCobro=fecha;}}
+  if(habId&&habId!=='null'){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=true;h.fechaCobro=fecha;h.mesCobro=mesCorrespondiente();}}
+  else if(igId&&igId!=='null'){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=true;ig.fechaCobro=fecha;ig.mesCobro=mesCorrespondiente();}}
   // Actualizar pill visualmente y ocultar la alerta
   if(pill){
     const box=pill.closest('.alert-box');
@@ -985,8 +1036,8 @@ function toggleCobroRapido(propId,habId,igId){
   const p=propiedades.find(x=>x.id===propId);
   if(!p) return;
   const fecha=new Date().toISOString().slice(0,10);
-  if(habId&&habId!=='null'){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=!h.cobrado;h.fechaCobro=h.cobrado?fecha:null;}}
-  else if(igId&&igId!=='null'){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=!ig.cobrado;ig.fechaCobro=ig.cobrado?fecha:null;}}
+  if(habId&&habId!=='null'){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=!h.cobrado;h.fechaCobro=h.cobrado?fecha:null;h.mesCobro=h.cobrado?mesCorrespondiente():null;}}
+  else if(igId&&igId!=='null'){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=!ig.cobrado;ig.fechaCobro=ig.cobrado?fecha:null;ig.mesCobro=ig.cobrado?mesCorrespondiente():null;}}
   saveData();
 }
 function toggleEditSumAlerta(propId,sId){
@@ -1024,7 +1075,7 @@ function marcarSumPagadoAlerta(propId,sId,btn){
   }
   const pill=document.getElementById('sp-'+propId+'-'+sId);
   if(pill){pill.className='estado-pill pill-ok';pill.style.cursor='default';pill.onclick=null;pill.textContent='✓ '+s.tipo+' día '+fecha.slice(8,10);}
-  s.estado='Pagado';s.fechaPago=fecha;
+  s.estado='Pagado';s.fechaPago=fecha;s.mesCobro=mesCorrespondiente();
   saveData();
   setTimeout(()=>renderSection(currentSection),900);
 }
@@ -1032,7 +1083,7 @@ function marcarSumPagadoDesdeAlerta(propId,sId,pill){
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
   if(!s) return;
   const fecha=new Date().toISOString().slice(0,10);
-  s.estado='Pagado'; s.fechaPago=fecha;
+  s.estado='Pagado'; s.fechaPago=fecha;s.mesCobro=mesCorrespondiente();
   saveData();
   if(pill){
     const box=pill.closest('.alert-box');
@@ -1049,7 +1100,7 @@ function marcarSumPagadoDesdeAlerta(propId,sId,pill){
 }
 function toggleSumDetalle(propId,sId){
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;}
+  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;s.mesCobro=s.estado==='Pagado'?mesCorrespondiente():null;}
   window._dTab='suministros';renderDetalle(document.getElementById('main-content'));saveData();
 }
 
@@ -1067,7 +1118,7 @@ function renderDetalle(cont){
   const ca=calcProp(p),tab=window._dTab||'resumen',hoy=new Date();
   let inqList=[];
   if(p.tipo==='habitaciones')inqList=p.habitaciones.filter(h=>h.inquilino).map(h=>({...h,alquilerBase:h.alquiler,alquiler:importeConIPC(h.alquiler,h.entrada),hab:'Hab.'+h.num}));
-  else inqList=(p.ingresos||[]).filter(ig=>ig.inquilino).map(ig=>({inquilino:ig.inquilino,telefono:ig.telefono||'',email:ig.email||'',alquiler:importeConIPC(ig.importe,ig.entrada),alquilerBase:ig.importe,entrada:ig.entrada||ig.fechaCobro||'',finContrato:ig.finContrato||'',cobrado:ig.cobrado,fechaCobro:ig.fechaCobro||'',hab:'Completo',id:ig.id}));
+  else inqList=(p.ingresos||[]).filter(ig=>ig.inquilino).map(ig=>({inquilino:ig.inquilino,telefono:ig.telefono||'',email:ig.email||'',alquiler:importeConIPC(ig.importe,ig.entrada),alquilerBase:ig.importe,entrada:ig.entrada||ig.fechaCobro||'',finContrato:ig.finContrato||'',cobrado:ig.cobrado,fechaCobro:ig.fechaCobro||'',mesCobro:ig.mesCobro||'',hab:'Completo',id:ig.id}));
 
   function ipcHTML(nombre,alquiler,entrada){
     if(!entrada||!alquiler)return'';
@@ -1118,13 +1169,13 @@ function renderDetalle(cont){
           <div><div class="card-title">${inq.inquilino}</div><div class="card-subtitle">${inq.hab}</div></div>
           <div style="text-align:right;"><span class="badge badge-green">${fmt(inq.alquiler)}€/mes</span>${inq.alquilerBase&&inq.alquiler!==inq.alquilerBase?`<div style="font-size:0.65rem;color:#888;margin-top:0.1rem;">Base: ${fmt(inq.alquilerBase)}€ +IPC</div>`:''}<br>
           <span class="badge badge-${inq.cobrado?'green':'orange'}" style="margin-top:0.2rem;cursor:pointer;" onclick="toggleCobro(${p.id},${p.tipo==='habitaciones'?inq.id:'null'},${p.tipo==='habitaciones'?'null':inq.id});window._dTab='inquilinos';renderDetalle(document.getElementById('main-content'))">${inq.cobrado?'✓ Cobrado ↩':'⏳ Pend. ✓'}</span><br>
-          <button class="btn btn-secondary btn-sm" style="margin-top:0.3rem;font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="editarIngreso(${p.id},${inq.id})">✏️ Editar</button></div>
+          <button class="btn btn-secondary btn-sm" style="margin-top:0.3rem;font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="${p.tipo==='habitaciones'?`editarHab(${p.id},${inq.id})`:`editarIngreso(${p.id},${inq.id})`}">✏️ Editar</button></div>
         </div>
         ${inq.telefono?`<div class="dr"><span class="lbl">📞</span><span class="val">${inq.telefono}</span></div>`:''}
         ${inq.email?`<div class="dr"><span class="lbl">✉️</span><span class="val">${inq.email}</span></div>`:''}
         <div class="dr"><span class="lbl">📅 Entrada</span><span class="val">${inq.entrada||'—'}</span></div>
         <div class="dr"><span class="lbl">🏁 Fin contrato</span><span class="val" style="color:${dias!==null&&dias<=60?'#9a3412':'inherit'}">${inq.finContrato?inq.finContrato+(dias!==null?' ('+dias+' días)':''):'—'}</span></div>
-        <div class="dr"><span class="lbl">💶 Último cobro</span><span class="val" style="color:${inq.cobrado?'#065f46':'#9a3412'}">${inq.fechaCobro?inq.fechaCobro:(inq.cobrado?'cobrado':'pendiente')}</span></div>
+        <div class="dr"><span class="lbl">💶 Último cobro</span><span class="val" style="color:${inq.cobrado?'#065f46':'#9a3412'}">${inq.cobrado?((fmtMesCobro(inq.mesCobro)||'cobrado')+(inq.fechaCobro?' · pagado el '+fmtDiaMes(inq.fechaCobro):'')):'pendiente'}</span></div>
         ${ipcHTML(inq.inquilino,inq.alquilerBase||inq.alquiler,inq.entrada)}
       </div>`;
     }).join('');
@@ -1159,7 +1210,7 @@ function renderDetalle(cont){
             </div>
           </div>
           ${pagado?`<div style="font-size:0.72rem;color:#065f46;background:#f0fdf4;border-radius:6px;padding:0.2rem 0.5rem;display:flex;justify-content:space-between;align-items:center;">
-            <span>✅ Pagado el ${s.fechaPago?fmtFechaPago(s.fechaPago):'—'}</span>
+            <span>✅ ${fmtMesCobro(s.mesCobro)?fmtMesCobro(s.mesCobro)+' · pagado el ':'Pagado el '}${s.fechaPago?fmtFechaPago(s.fechaPago):'—'}</span>
           </div>`:''}
           <div id="edit-sum-det-${s.id}" style="display:none;background:#f8fafc;border-radius:8px;padding:0.5rem;border:1px solid #e5e7eb;">
             <div style="font-size:0.72rem;font-weight:700;color:#888;margin-bottom:0.4rem;">Editar suministro</div>
@@ -1425,8 +1476,8 @@ function guardarHab(propId,habId){
   h.finContrato=document.getElementById('h-fin').value;
   h.fianza=parseFloat(document.getElementById('h-fianza').value)||0;
   h.cobrado=document.getElementById('h-cobrado').checked;
-  if(h.cobrado){h.fechaCobro=document.getElementById('h-fechacobro').value||new Date().toISOString().slice(0,10);}
-  else{h.fechaCobro=null;}
+  if(h.cobrado){h.fechaCobro=document.getElementById('h-fechacobro').value||new Date().toISOString().slice(0,10);if(!h.mesCobro)h.mesCobro=mesCorrespondiente();}
+  else{h.fechaCobro=null;h.mesCobro=null;}
   h.notas=document.getElementById('h-notas').value;
   saveData();verHabitaciones(propId);
 }
@@ -1481,8 +1532,8 @@ function toggleCobro(propId,habId,igId){
       if(!h.cobrado){
         const f=prompt('¿Qué día se realizó el pago? (AAAA-MM-DD)',new Date().toISOString().slice(0,10));
         if(!f) return;
-        h.cobrado=true;h.fechaCobro=f;
-      } else {h.cobrado=false;h.fechaCobro=null;}
+        h.cobrado=true;h.fechaCobro=f;h.mesCobro=mesCorrespondiente();
+      } else {h.cobrado=false;h.fechaCobro=null;h.mesCobro=null;}
     }
   } else if(igId){
     const ig=(p.ingresos||[]).find(x=>x.id===igId);
@@ -1490,8 +1541,8 @@ function toggleCobro(propId,habId,igId){
       if(!ig.cobrado){
         const f=prompt('¿Qué día se realizó el pago? (AAAA-MM-DD)',new Date().toISOString().slice(0,10));
         if(!f) return;
-        ig.cobrado=true;ig.fechaCobro=f;
-      } else {ig.cobrado=false;ig.fechaCobro=null;}
+        ig.cobrado=true;ig.fechaCobro=f;ig.mesCobro=mesCorrespondiente();
+      } else {ig.cobrado=false;ig.fechaCobro=null;ig.mesCobro=null;}
     }
   }
   saveData();
@@ -1540,8 +1591,8 @@ function guardarEdicionIngreso(propId,igId){
   ig.entrada=document.getElementById('ei-entrada').value;
   ig.finContrato=document.getElementById('ei-fin').value;
   ig.cobrado=document.getElementById('ei-cobrado').checked;
-  if(ig.cobrado){ig.fechaCobro=document.getElementById('ei-fechacobro').value||new Date().toISOString().slice(0,10);}
-  else{ig.fechaCobro=null;}
+  if(ig.cobrado){ig.fechaCobro=document.getElementById('ei-fechacobro').value||new Date().toISOString().slice(0,10);if(!ig.mesCobro)ig.mesCobro=mesCorrespondiente();}
+  else{ig.fechaCobro=null;ig.mesCobro=null;}
   saveData();closeModal();
   if(currentSection==='detalle'){window._dTab='inquilinos';renderDetalle(document.getElementById('main-content'));}
 }
@@ -1681,7 +1732,7 @@ function verSuministrosProp(propId){
             <button onclick="borrarSum(${propId},${s.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;">✕</button>
           </div>
         </div>
-        ${pagado&&s.fechaPago?`<div style="font-size:0.72rem;color:#065f46;background:#f0fdf4;border-radius:6px;padding:0.2rem 0.5rem;">✅ Pagado el ${fmtFechaPago(s.fechaPago)}</div>`:''}
+        ${pagado&&s.fechaPago?`<div style="font-size:0.72rem;color:#065f46;background:#f0fdf4;border-radius:6px;padding:0.2rem 0.5rem;">✅ ${fmtMesCobro(s.mesCobro)?fmtMesCobro(s.mesCobro)+' · pagado el ':'Pagado el '}${fmtFechaPago(s.fechaPago)}</div>`:''}
         <div id="fecha-sum-edit-${s.id}" style="display:none;background:#f8fafc;border-radius:8px;padding:0.5rem 0.6rem;border:1px solid #e5e7eb;">
           <div style="font-size:0.72rem;font-weight:700;color:#888;margin-bottom:0.35rem;">Editar suministro</div>
           <div style="display:flex;flex-direction:column;gap:0.3rem;">
@@ -1731,7 +1782,8 @@ function toggleSumEstado(propId,sId){
   if(s){
     s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';
     if(s.estado==='Pagado'&&!s.fechaPago) s.fechaPago=new Date().toISOString().slice(0,10);
-    if(s.estado==='Pendiente') s.fechaPago=null;
+    if(s.estado==='Pagado'&&!s.mesCobro) s.mesCobro=mesCorrespondiente();
+    if(s.estado==='Pendiente'){s.fechaPago=null;s.mesCobro=null;}
   }
   verSuministrosProp(propId);saveData();
 }
@@ -1745,7 +1797,7 @@ function guardarFechaSum(propId,sId){
   const titEl=document.getElementById('fse-tit-'+sId);
   const perEl=document.getElementById('fse-per-'+sId);
   if(s){
-    if(inp&&inp.value){s.fechaPago=inp.value;s.estado='Pagado';}
+    if(inp&&inp.value){s.fechaPago=inp.value;s.estado='Pagado';if(!s.mesCobro)s.mesCobro=mesCorrespondiente();}
     if(titEl&&titEl.value.trim()) s.tipo=titEl.value.trim();
     if(perEl&&perEl.value) s.periodoFecha=perEl.value;
     saveData();
@@ -1776,6 +1828,7 @@ function guardarEditSumDetalle(propId,sId){
   if(fpEl&&fpEl.value){
     s.fechaPago=fpEl.value;
     s.estado='Pagado';
+    if(!s.mesCobro)s.mesCobro=mesCorrespondiente();
   }
   saveData();
   window._dTab='suministros';renderDetalle(document.getElementById('main-content'));
@@ -1823,7 +1876,7 @@ function renderSuministrosGlobal(c){
 }
 function toggleSumGlobal(propId,sId){
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;}
+  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;s.mesCobro=s.estado==='Pagado'?mesCorrespondiente():null;}
   renderSection(currentSection);saveData();
 }
 
@@ -1832,8 +1885,8 @@ function renderInquilinos(c){
   const inqs=[];
   propiedades.forEach(p=>{
     const sums=p.suministros||[];
-    if(p.tipo==='habitaciones')p.habitaciones.filter(h=>h.inquilino).forEach(h=>inqs.push({nombre:h.inquilino,tel:h.telefono,email:h.email,alquiler:h.alquiler,prop:p.nombre,propId:p.id,habId:h.id,igId:null,hab:'Hab. '+h.num,entrada:h.entrada,fin:h.finContrato,cobrado:h.cobrado,fechaCobro:h.fechaCobro||'',notas:h.notas||'',suministros:sums}));
-    else(p.ingresos||[]).filter(ig=>ig.inquilino).forEach(ig=>inqs.push({nombre:ig.inquilino,tel:ig.telefono||'',email:ig.email||'',alquiler:ig.importe,prop:p.nombre,propId:p.id,habId:null,igId:ig.id,hab:'Piso completo',entrada:ig.entrada||'',fin:ig.finContrato||'',cobrado:ig.cobrado,fechaCobro:ig.fechaCobro||'',notas:'',suministros:sums}));
+    if(p.tipo==='habitaciones')p.habitaciones.filter(h=>h.inquilino).forEach(h=>inqs.push({nombre:h.inquilino,tel:h.telefono,email:h.email,alquiler:h.alquiler,prop:p.nombre,propId:p.id,habId:h.id,igId:null,hab:'Hab. '+h.num,entrada:h.entrada,fin:h.finContrato,cobrado:h.cobrado,fechaCobro:h.fechaCobro||'',mesCobro:h.mesCobro||'',notas:h.notas||'',suministros:sums}));
+    else(p.ingresos||[]).filter(ig=>ig.inquilino).forEach(ig=>inqs.push({nombre:ig.inquilino,tel:ig.telefono||'',email:ig.email||'',alquiler:ig.importe,prop:p.nombre,propId:p.id,habId:null,igId:ig.id,hab:'Piso completo',entrada:ig.entrada||'',fin:ig.finContrato||'',cobrado:ig.cobrado,fechaCobro:ig.fechaCobro||'',mesCobro:ig.mesCobro||'',notas:'',suministros:sums}));
   });
   if(!inqs.length){c.innerHTML=`<div class="empty"><div class="empty-icon">👥</div><p>Sin inquilinos registrados.<br>Añádelos desde cada propiedad.</p></div>`;return;}
   c.innerHTML=inqs.map(i=>{
@@ -1912,7 +1965,7 @@ function renderInquilinos(c){
       ${i.email?`<div class="dr"><span class="lbl">✉️</span><span class="val">${i.email}</span></div>`:''}
       ${i.entrada?`<div class="dr"><span class="lbl">📅 Entrada</span><span class="val">${i.entrada}</span></div>`:''}
       ${i.fin?`<div class="dr"><span class="lbl">🏁 Fin contrato</span><span class="val" style="color:${diasFin!==null&&diasFin<=60?'#9a3412':'inherit'}">${i.fin}${diasFin!==null?' ('+diasFin+'d)':''}</span></div>`:''}
-      ${i.fechaCobro?`<div class="dr"><span class="lbl">💶 Último cobro</span><span class="val" style="color:${i.cobrado?'#065f46':'#9a3412'}">${i.fechaCobro}</span></div>`:''}
+      ${i.fechaCobro?`<div class="dr"><span class="lbl">💶 Último cobro</span><span class="val" style="color:${i.cobrado?'#065f46':'#9a3412'}">${(fmtMesCobro(i.mesCobro)||'cobrado')+' · pagado el '+fmtDiaMes(i.fechaCobro)}</span></div>`:''}
       ${sumsHTML}
       ${editForm}
     </div>`;
@@ -1921,7 +1974,7 @@ function renderInquilinos(c){
 
 function toggleSumInquilinos(propId,sId){
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;}
+  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;s.mesCobro=s.estado==='Pagado'?mesCorrespondiente():null;}
   renderSection(currentSection);saveData();
 }
 
