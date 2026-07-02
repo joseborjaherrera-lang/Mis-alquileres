@@ -638,13 +638,15 @@ const INICIO_INGRESOS={
 };
 
 function propActiva(nombre, anio, mes){
-  const ini=INICIO_PROP[nombre];
+  const p=propiedades.find(x=>x.nombre===nombre);
+  const ini=(p&&p.inicioGastos)||INICIO_PROP[nombre];
   if(!ini) return true;
   return !(anio<ini.anio||(anio===ini.anio&&mes<ini.mes));
 }
 // ¿Hay ingresos de esta propiedad en este mes? (puede empezar más tarde que los gastos)
 function ingresosActivos(nombre, anio, mes){
-  const ini=INICIO_INGRESOS[nombre]||INICIO_PROP[nombre];
+  const p=propiedades.find(x=>x.nombre===nombre);
+  const ini=(p&&p.inicioIngresos)||INICIO_INGRESOS[nombre]||(p&&p.inicioGastos)||INICIO_PROP[nombre];
   if(!ini) return true;
   return !(anio<ini.anio||(anio===ini.anio&&mes<ini.mes));
 }
@@ -1383,9 +1385,9 @@ function renderDetalle(cont){
         ${ipcHTML(inq.inquilino,inq.alquilerBase||inq.alquiler,inq.entrada)}
       </div>`;
     }).join('');
-    tabContent+=(p.tipo==='completo'
-      ?`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verIngresos(${p.id})">+ Añadir inquilino</button>`
-      :`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verHabitaciones(${p.id})">🛏️ Gestionar habitaciones</button>`);
+    tabContent+=(p.tipo==='habitaciones'
+      ?`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verHabitaciones(${p.id})">🛏️ Gestionar habitaciones</button>`
+      :`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verIngresos(${p.id})">+ ${p.tipo==='gestion'?'Editar ingreso de gestión':'Añadir inquilino'}</button>`);
   }else if(tab==='gastos'){
     const gastos=p.gastos||[];
     tabContent=(gastos.length?`<div class="card">${gastos.map(g=>`<div class="list-item"><div><div class="li-title">${g.concepto}</div><div class="li-sub">${g.categoria}${g.recurrente?' · 🔁 Recurrente':' · Puntual'}${g.tipoAnual?' · ÷12':''}${gastoInicioLabel(g)?' · '+gastoInicioLabel(g):''}</div></div><div style="display:flex;align-items:center;gap:0.4rem;"><span style="font-weight:700;color:#991b1b;">${fmt(g.importe)}€</span><button onclick="borrarGasto(${p.id},${g.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem;">✕</button></div></div>`).join('')}</div>`:'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin gastos</p>');
@@ -1514,6 +1516,7 @@ function renderPropiedades(c){
         <div style="display:flex;flex-direction:column;gap:0.25rem;align-items:flex-end;">
           <span class="badge badge-${p.estado==='ocupado'?'green':p.estado==='libre'?'orange':'gray'}">${p.estado==='ocupado'?'Ocupado':p.estado==='libre'?'Libre':'Reforma'}</span>
           ${tiSoc?`<span class="badge badge-purple">÷${ca.numSocios}</span>`:''}
+          ${p.tipo==='gestion'?`<span class="badge badge-purple">🤝 Gestión</span>`:''}
         </div>
       </div>
       <div class="dr"><span class="lbl">Ingresos</span><span class="val" style="color:#1e40af;">${fmt(ca.ingresos)}€/mes</span></div>
@@ -1549,13 +1552,22 @@ function abrirModalProp(propId){
     <div class="field"><label>Tipo</label><select id="m-tipo" onchange="onTipoChange()">
       <option value="completo" ${p&&p.tipo==='completo'?'selected':''}>Piso completo</option>
       <option value="habitaciones" ${p&&p.tipo==='habitaciones'?'selected':''}>Por habitaciones</option>
+      <option value="gestion" ${p&&p.tipo==='gestion'?'selected':''}>Gestión (ingreso fijo, piso ajeno)</option>
     </select></div>
     <div class="field" id="m-numhab-wrap" style="display:${p&&p.tipo==='habitaciones'?'block':'none'}">
       <label>Número de habitaciones</label><input id="m-numhab" type="number" min="1" max="20" value="${p?p.numHabitaciones:2}"/>
     </div>
     <div class="field"><label>Dirección</label><input id="m-dir" value="${p?p.direccion:''}" placeholder="Calle y número..."/></div>
     <div class="field" id="m-alq-wrap" style="display:${p&&p.tipo==='habitaciones'?'none':'block'}">
-      <label>Alquiler mensual (€)</label><input id="m-alq" type="number" value="${p&&p.ingresos&&p.ingresos[0]?p.ingresos[0].importe:''}" placeholder="0"/>
+      <label id="m-alq-label">${p&&p.tipo==='gestion'?'Ingreso mensual de gestión (neto €)':'Alquiler mensual (€)'}</label><input id="m-alq" type="number" value="${p&&p.ingresos&&p.ingresos[0]?p.ingresos[0].importe:''}" placeholder="0"/>
+    </div>
+    <div class="field">
+      <label>Empieza a contar desde (opcional)</label>
+      <div style="display:flex;gap:0.4rem;">
+        <select id="m-ini-mes" style="flex:1;"><option value="">— mes —</option>${NOMBRES_MES.map((nm,i)=>`<option value="${i+1}" ${p&&p.inicioIngresos&&p.inicioIngresos.mes===i+1?'selected':''}>${nm}</option>`).join('')}</select>
+        <input id="m-ini-anio" type="number" min="2020" max="2100" placeholder="año" value="${p&&p.inicioIngresos?p.inicioIngresos.anio:''}" style="width:90px;"/>
+      </div>
+      <div style="font-size:0.68rem;color:#9ca3af;margin-top:0.2rem;">Déjalo vacío si cuenta desde siempre. Úsalo si el piso empezó a generar ingresos más tarde (ej. recién alquilado).</div>
     </div>
     <div class="field"><label>Estado</label><select id="m-estado">
       <option value="ocupado" ${p&&p.estado==='ocupado'?'selected':''}>Ocupado</option>
@@ -1576,31 +1588,38 @@ function onTipoChange(){
   const t=document.getElementById('m-tipo').value;
   document.getElementById('m-numhab-wrap').style.display=t==='habitaciones'?'block':'none';
   document.getElementById('m-alq-wrap').style.display=t==='habitaciones'?'none':'block';
+  const lbl=document.getElementById('m-alq-label');
+  if(lbl)lbl.textContent=t==='gestion'?'Ingreso mensual de gestión (neto €)':'Alquiler mensual (€)';
 }
 function guardarProp(propId){
   const nombre=document.getElementById('m-nombre').value.trim();
   if(!nombre){alert('El nombre es obligatorio');return;}
   const tipo=document.getElementById('m-tipo').value,dir=document.getElementById('m-dir').value.trim(),estado=document.getElementById('m-estado').value;
   const numHab=tipo==='habitaciones'?parseInt(document.getElementById('m-numhab').value)||1:0;
-  const alq=tipo==='completo'?parseFloat(document.getElementById('m-alq').value)||0:0;
+  const alq=(tipo==='completo'||tipo==='gestion')?parseFloat(document.getElementById('m-alq').value)||0:0;
   const socios=[];
   document.querySelectorAll('#socios-list .socio-row').forEach(row=>{const inp=row.querySelector('input');if(inp&&inp.value.trim())socios.push(inp.value.trim());});
+  const iniMes=parseInt(document.getElementById('m-ini-mes').value)||0;
+  const iniAnio=parseInt(document.getElementById('m-ini-anio').value)||0;
+  const inicioIngresos=(iniMes&&iniAnio)?{anio:iniAnio,mes:iniMes}:null;
   if(propId){
     const p=propiedades.find(x=>x.id===propId);if(!p)return;
     p.nombre=nombre;p.tipo=tipo;p.direccion=dir;p.estado=estado;p.socios=socios;
+    if(inicioIngresos)p.inicioIngresos=inicioIngresos; else delete p.inicioIngresos;
     if(tipo==='habitaciones'){
       p.numHabitaciones=numHab;
       while(p.habitaciones.length<numHab)p.habitaciones.push({id:nextId++,num:p.habitaciones.length+1,inquilino:'',telefono:'',email:'',alquiler:0,entrada:'',finContrato:'',fianza:0,notas:'',cobrado:false});
       if(p.habitaciones.length>numHab)p.habitaciones=p.habitaciones.slice(0,numHab);
     }
-    if(tipo==='completo'&&alq){
-      if(!p.ingresos||!p.ingresos.length)p.ingresos=[{id:nextId++,concepto:'Alquiler',importe:alq,mes:MES_ACTUAL,anio:ANIO_ACTUAL,cobrado:false,inquilino:'',finContrato:'',entrada:''}];
+    if((tipo==='completo'||tipo==='gestion')&&alq){
+      if(!p.ingresos||!p.ingresos.length)p.ingresos=[{id:nextId++,concepto:tipo==='gestion'?'Gestión':'Alquiler',importe:alq,mes:MES_ACTUAL,anio:ANIO_ACTUAL,cobrado:false,inquilino:'',finContrato:'',entrada:''}];
       else p.ingresos[0].importe=alq;
     }
   }else{
     const np={id:nextId++,nombre,tipo,direccion:dir,estado,numHabitaciones:numHab,socios,habitaciones:[],gastos:[],ingresos:[],suministros:[]};
+    if(inicioIngresos)np.inicioIngresos=inicioIngresos;
     if(tipo==='habitaciones')for(let i=0;i<numHab;i++)np.habitaciones.push({id:nextId++,num:i+1,inquilino:'',telefono:'',email:'',alquiler:0,entrada:'',finContrato:'',fianza:0,notas:'',cobrado:false});
-    else if(alq)np.ingresos.push({id:nextId++,concepto:'Alquiler',importe:alq,mes:MES_ACTUAL,anio:ANIO_ACTUAL,cobrado:false,inquilino:'',finContrato:'',entrada:''});
+    else if(alq)np.ingresos.push({id:nextId++,concepto:tipo==='gestion'?'Gestión':'Alquiler',importe:alq,mes:MES_ACTUAL,anio:ANIO_ACTUAL,cobrado:false,inquilino:'',finContrato:'',entrada:''});
     propiedades.push(np);
   }
   closeModal();renderSection(currentSection);saveData();
