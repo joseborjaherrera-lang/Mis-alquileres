@@ -630,6 +630,24 @@ function gastosHistoricos(propNombre, anio, mes){
   return HISTORICO_GASTOS[propNombre]||null;
 }
 
+// ¿Aplica este gasto en el mes/año indicado?
+//  - Recurrente: cuenta desde su mes/año de inicio en adelante.
+//  - Puntual: solo en su mes/año exacto.
+//  - Sin fecha (gastos antiguos): se trata como recurrente siempre (comportamiento anterior).
+function gastoAplicaEnMes(g, anio, mes){
+  if(g.anio==null||g.mes==null) return true;
+  if(g.recurrente){
+    return anio>g.anio||(anio===g.anio&&mes>=g.mes);
+  }
+  return anio===g.anio&&mes===g.mes;
+}
+// Etiqueta legible del inicio de un gasto: "Jun 2026" (recurrente = "desde Jun 2026")
+function gastoInicioLabel(g){
+  if(g.mes==null||g.anio==null) return '';
+  const nm=NOMBRES_MES[(g.mes-1+12)%12]||g.mes;
+  return (g.recurrente?'desde ':'')+nm.slice(0,3)+' '+g.anio;
+}
+
 // Devuelve ingresos y gastos mensuales para un año/mes dado
 function esMesPasado(anio,mes){return anio<ANIO_ACTUAL||(anio===ANIO_ACTUAL&&mes<MES_ACTUAL);}
 function calcMes(anio, mes){
@@ -655,9 +673,9 @@ function calcMes(anio, mes){
     if(esMesPasado(anio,mes)){
       const hg=gastosHistoricos(p.nombre,anio,mes);
       if(hg){hg.forEach(g=>gasP+=(g.importe||0));}
-      else{(p.gastos||[]).forEach(g=>gasP+=(g.importe||0));}
+      else{(p.gastos||[]).forEach(g=>{if(gastoAplicaEnMes(g,anio,mes))gasP+=(g.importe||0);});}
     } else {
-      (p.gastos||[]).forEach(g=>gasP+=(g.importe||0));
+      (p.gastos||[]).forEach(g=>{if(gastoAplicaEnMes(g,anio,mes))gasP+=(g.importe||0);});
       (p.suministros||[]).filter(s=>s.pagador==='Propietario').forEach(s=>gasP+=(s.importe||0));
     }
     const numSocios=(p.socios||[]).length+1; // tú + socios
@@ -683,7 +701,8 @@ function detalleMes(anio, mes){
     if(histImp!==null){ing=histImp;}
     else if(p.tipo==='habitaciones'){p.habitaciones.filter(h=>h.inquilino).forEach(h=>{ing+=importeConIPC(h.alquiler,h.entrada)||0;});}
     else{(p.ingresos||[]).forEach(ig=>{ing+=importeConIPC(ig.importe,ig.entrada)||0;});}
-    const hg=gastosHistoricos(p.nombre,anio,mes)||p.gastos||[];
+    const hgRaw=gastosHistoricos(p.nombre,anio,mes);
+    const hg=hgRaw||(p.gastos||[]).filter(g=>gastoAplicaEnMes(g,anio,mes));
     const gasLista=hg.map((g,i)=>({id:g.id!=null?g.id:('h'+i),concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0,tipoAnual:g.tipoAnual||false}));
     const gas=gasLista.reduce((a,g)=>a+g.importe,0);
     const numSocios=(p.socios||[]).length+1;
@@ -760,6 +779,11 @@ function V(d,campo){
     if(campo==='neto') return d.netoMio;
   }
   return d[campo];
+}
+// Igual que V pero para una fila de propiedad de detalleMes (ing/gas), aplicando socios
+function V2(x,campo){
+  const val=x[campo]||0;
+  return _modoSocio?val/(x.numSocios||1):val;
 }
 
 function renderResumen(c){
@@ -925,6 +949,16 @@ function renderResumen(c){
           </div>`;
         });
         detalleHTML=`<div style="margin-top:0.5rem;padding-top:0.5rem;border-top:1px solid #e5e7eb;">
+          ${(()=>{
+            if(!tieneOverride) return '';
+            const realIng=detalle.reduce((a,x)=>a+V2(x,'ing'),0);
+            const realGas=detalle.reduce((a,x)=>a+V2(x,'gas'),0);
+            const desajuste=Math.abs(realIng-d.ingresos)>1||Math.abs(realGas-d.gastos)>1;
+            if(!desajuste) return '';
+            return `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:0.5rem 0.7rem;margin-bottom:0.5rem;font-size:0.72rem;color:#92400e;">
+              ⚠️ Los totales de este mes están fijados a mano y no coinciden con el desglose real (${Math.round(realIng)}€ ingresos · ${Math.round(realGas)}€ gastos). Pulsa <strong>↩ Reset</strong> para recalcular con los gastos actuales.
+            </div>`;
+          })()}
           ${propRows}
           <div style="margin-top:0.5rem;padding-top:0.3rem;border-top:1px dashed #e5e7eb;display:flex;justify-content:flex-end;">
             <button onclick="event.stopPropagation();_mesEditando=${m};renderSection(currentSection)" style="background:none;border:1px solid #d1d5db;border-radius:6px;padding:0.2rem 0.5rem;font-size:0.7rem;cursor:pointer;color:#6b7280;">✏️ Modificar totales</button>
@@ -1184,7 +1218,7 @@ function renderDetalle(cont){
       :`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verHabitaciones(${p.id})">🛏️ Gestionar habitaciones</button>`);
   }else if(tab==='gastos'){
     const gastos=p.gastos||[];
-    tabContent=(gastos.length?`<div class="card">${gastos.map(g=>`<div class="list-item"><div><div class="li-title">${g.concepto}</div><div class="li-sub">${g.categoria}${g.recurrente?' · Recurrente':''}${g.tipoAnual?' · ÷12':''}</div></div><div style="display:flex;align-items:center;gap:0.4rem;"><span style="font-weight:700;color:#991b1b;">${fmt(g.importe)}€</span><button onclick="borrarGasto(${p.id},${g.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem;">✕</button></div></div>`).join('')}</div>`:'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin gastos</p>');
+    tabContent=(gastos.length?`<div class="card">${gastos.map(g=>`<div class="list-item"><div><div class="li-title">${g.concepto}</div><div class="li-sub">${g.categoria}${g.recurrente?' · 🔁 Recurrente':' · Puntual'}${g.tipoAnual?' · ÷12':''}${gastoInicioLabel(g)?' · '+gastoInicioLabel(g):''}</div></div><div style="display:flex;align-items:center;gap:0.4rem;"><span style="font-weight:700;color:#991b1b;">${fmt(g.importe)}€</span><button onclick="borrarGasto(${p.id},${g.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem;">✕</button></div></div>`).join('')}</div>`:'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin gastos</p>');
     tabContent+=`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verGastos(${p.id})">+ Añadir gasto</button>`;
   }else if(tab==='suministros'){
     const sums=p.suministros||[];
@@ -1618,7 +1652,7 @@ function verGastos(propId){
       <div class="list-item" id="gasto-row-${g.id}">
         <div style="flex:1;">
           <div class="li-title">${g.concepto}</div>
-          <div class="li-sub">${g.categoria}${g.tipoAnual?' · Anual ÷12 = '+fmt(g.importe)+'€/mes':' · '+fmt(g.importe)+'€'}${g.recurrente?' · Recurrente':''}</div>
+          <div class="li-sub">${g.categoria}${g.tipoAnual?' · Anual ÷12 = '+fmt(g.importe)+'€/mes':' · '+fmt(g.importe)+'€'}${g.recurrente?' · 🔁 Recurrente':' · Puntual'}${gastoInicioLabel(g)?' · '+gastoInicioLabel(g):''}</div>
         </div>
         <div style="display:flex;align-items:center;gap:0.4rem;">
           ${g.tipoAnual?`<span class="badge badge-blue">${fmt(g.importeAnual||g.importe*12)}€/año</span>`:''}
@@ -1632,6 +1666,11 @@ function verGastos(propId){
           <div class="field"><label style="font-size:0.72rem;">Concepto</label><input id="ge-con-${g.id}" value="${g.concepto}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
           <div class="field"><label style="font-size:0.72rem;">Importe €/mes</label><input id="ge-imp-${g.id}" type="number" value="${g.tipoAnual?(g.importeAnual||g.importe*12):g.importe}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
         </div>
+        <div class="field-row">
+          <div class="field"><label style="font-size:0.72rem;">Mes inicio</label><input id="ge-mes-${g.id}" type="number" min="1" max="12" value="${g.mes||MES_ACTUAL}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
+          <div class="field"><label style="font-size:0.72rem;">Año</label><input id="ge-anio-${g.id}" type="number" value="${g.anio||ANIO_ACTUAL}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
+          <div class="field" style="display:flex;align-items:flex-end;padding-bottom:0.35rem;"><label style="display:flex;align-items:center;gap:0.4rem;margin:0;font-size:0.78rem;"><input id="ge-rec-${g.id}" type="checkbox" ${g.recurrente?'checked':''} style="width:auto;margin:0;"/> Recurrente</label></div>
+        </div>
         <div style="display:flex;gap:0.4rem;">
           <button onclick="guardarEditGasto(${propId},${g.id})" style="background:#065f46;color:white;border:none;border-radius:6px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer;flex:1;">✓ Guardar</button>
           <button onclick="document.getElementById('gasto-edit-${g.id}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:6px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer;">✕</button>
@@ -1643,7 +1682,7 @@ function verGastos(propId){
     <div class="field"><label>Categoría</label><select id="g-cat" onchange="onCatChange()">
       <option value="Comunidad">Comunidad</option><option value="Hipoteca">Hipoteca</option>
       <option value="IBI">IBI (anual ÷12)</option><option value="Seguro">Seguro (anual ÷12)</option>
-      <option value="Avería">Avería</option><option value="Mantenimiento">Mantenimiento</option>
+      <option value="Agua">Agua</option><option value="Internet">Internet</option><option value="Luz">Luz</option><option value="Gas">Gas</option><option value="Avería">Avería</option><option value="Mantenimiento">Mantenimiento</option>
       <option value="Gestión">Gestión</option><option value="Otro">Otro</option>
     </select></div>
     <div class="field" id="g-anual-wrap" style="display:none;">
@@ -1700,6 +1739,10 @@ function guardarEditGasto(propId,gId){
   const v=parseFloat(impEl.value)||0;
   if(g.tipoAnual){g.importeAnual=v;g.importe=Math.round(v/12*100)/100;}
   else{g.importe=v;}
+  const mesEl=document.getElementById('ge-mes-'+gId),anioEl=document.getElementById('ge-anio-'+gId),recEl=document.getElementById('ge-rec-'+gId);
+  if(mesEl){const m=parseInt(mesEl.value);if(m>=1&&m<=12)g.mes=m;}
+  if(anioEl){const a=parseInt(anioEl.value);if(a>=2020&&a<=2100)g.anio=a;}
+  if(recEl)g.recurrente=recEl.checked;
   saveData();verGastos(propId);
 }
 
