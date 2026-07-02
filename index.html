@@ -181,12 +181,13 @@ let _saveTimer=null;
 function showToast(msg){const t=document.getElementById('sync-toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000);}
 
 async function saveData(){
-  try{localStorage.setItem('alq_data',JSON.stringify({propiedades,nextId}));}catch(e){}
+  const payload={propiedades,nextId,overrides:_overrides};
+  try{localStorage.setItem('alq_data',JSON.stringify(payload));}catch(e){}
   if(!currentUser)return;
   clearTimeout(_saveTimer);
   _saveTimer=setTimeout(async()=>{
     try{
-      await _sb.from('alquileres').upsert({user_id:currentUser.id,data:JSON.stringify({propiedades,nextId}),updated_at:new Date().toISOString()},{onConflict:'user_id'});
+      await _sb.from('alquileres').upsert({user_id:currentUser.id,data:JSON.stringify(payload),updated_at:new Date().toISOString()},{onConflict:'user_id'});
       showToast('☁️ Guardado');
     }catch(e){}
   },800);
@@ -199,13 +200,33 @@ async function loadFromCloud(){
     if(data&&data.data){
       const d=JSON.parse(data.data);
       if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;}
+      if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{}};}
+      else{migrarOverridesLocales();}
       return;
     }
   }catch(e){}
   // Fallback a datos locales (migración desde versión anterior)
   try{
     const d=JSON.parse(localStorage.getItem('alq_data')||'null');
-    if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;saveData();}
+    if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;}
+    if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{}};}
+    else{migrarOverridesLocales();}
+    if(d&&d.propiedades)saveData();
+  }catch(e){}
+}
+
+// Migra los overrides que estaban en claves sueltas de localStorage al objeto _overrides.
+// Se ejecuta una sola vez cuando aún no hay overrides en la nube.
+function migrarOverridesLocales(){
+  try{
+    const r=JSON.parse(localStorage.getItem('alq_renta_override')||'{}');
+    if(r&&typeof r==='object')_overrides.renta=Object.assign({},r,_overrides.renta);
+  }catch(e){}
+  try{
+    Object.keys(localStorage).forEach(k=>{
+      const m=k.match(/^alq_mes_(\d+)_(\d+)$/);
+      if(m){try{const v=JSON.parse(localStorage.getItem(k));if(v)_overrides.mes[m[1]+'_'+m[2]]=v;}catch(e){}}
+    });
   }catch(e){}
 }
 
@@ -548,22 +569,31 @@ const HISTORICO_ALQUILERES_MES={
     '2026-6':714, '2026-7':714, '2026-8':714, '2026-9':714, '2026-10':714, '2026-11':714, '2026-12':714,
   },
 };
-// Overrides editables por el usuario (renta por mes), guardados en localStorage.
+// Overrides editables por el usuario, sincronizados en la nube junto con las propiedades.
+//  _overrides.renta  -> { 'Propiedad|AÑO-MES': importe }   (correcciones de renta por mes)
+//  _overrides.mes    -> { 'AÑO_MES': {ingresos,gastos} }    (totales de mes fijados a mano)
+let _overrides={renta:{},mes:{}};
 function getOverrideRentaMes(propNombre,anio,mes){
-  try{
-    const o=JSON.parse(localStorage.getItem('alq_renta_override')||'{}');
-    const k=propNombre+'|'+anio+'-'+mes;
-    return o[k]!==undefined?o[k]:null;
-  }catch(e){return null;}
+  const k=propNombre+'|'+anio+'-'+mes;
+  return (_overrides.renta&&_overrides.renta[k]!==undefined)?_overrides.renta[k]:null;
 }
 function setOverrideRentaMes(propNombre,anio,mes,importe){
-  try{
-    const o=JSON.parse(localStorage.getItem('alq_renta_override')||'{}');
-    const k=propNombre+'|'+anio+'-'+mes;
-    if(importe===null||importe===''){delete o[k];}
-    else{o[k]=Math.round(parseFloat(importe)||0);}
-    localStorage.setItem('alq_renta_override',JSON.stringify(o));
-  }catch(e){}
+  _overrides.renta=_overrides.renta||{};
+  const k=propNombre+'|'+anio+'-'+mes;
+  if(importe===null||importe===''){delete _overrides.renta[k];}
+  else{_overrides.renta[k]=Math.round(parseFloat(importe)||0);}
+  // saveData persiste _overrides en la nube (y en local como respaldo)
+}
+// Acceso a los overrides de total de mes (antes claves sueltas alq_mes_AÑO_MES)
+function getOverrideMes(anio,mes){
+  const k=anio+'_'+mes;
+  return (_overrides.mes&&_overrides.mes[k]!==undefined)?_overrides.mes[k]:null;
+}
+function setOverrideMes(anio,mes,val){
+  _overrides.mes=_overrides.mes||{};
+  const k=anio+'_'+mes;
+  if(val===null){delete _overrides.mes[k];}
+  else{_overrides.mes[k]=val;}
 }
 // Gastos fijos por propiedad (€/mes, siempre iguales desde 2023)
 const HISTORICO_GASTOS={
@@ -592,6 +622,7 @@ const HISTORICO_GASTOS={
   // San Pablo: gastos desde enero 2026 (usa gastos reales de la propiedad)
 };
 // Inicio de cada propiedad en el histórico
+// Inicio de GASTOS de cada propiedad (cuando se compra / empieza a generar costes)
 const INICIO_PROP={
   'Dos Hermanas':    {anio:2025,mes:6},
   'Oliva 133':       {anio:2023,mes:1},
@@ -599,9 +630,21 @@ const INICIO_PROP={
   'Nueva Europa 3-2':{anio:2023,mes:1},
   'San Pablo':       {anio:2026,mes:1},
 };
+// Inicio de INGRESOS (cuando empieza a entrar dinero de alquiler).
+// Si no se indica, coincide con INICIO_PROP. San Pablo: comprada en enero pero
+// alquilada desde junio, así que gastos desde enero e ingresos desde junio.
+const INICIO_INGRESOS={
+  'San Pablo':       {anio:2026,mes:6},
+};
 
 function propActiva(nombre, anio, mes){
   const ini=INICIO_PROP[nombre];
+  if(!ini) return true;
+  return !(anio<ini.anio||(anio===ini.anio&&mes<ini.mes));
+}
+// ¿Hay ingresos de esta propiedad en este mes? (puede empezar más tarde que los gastos)
+function ingresosActivos(nombre, anio, mes){
+  const ini=INICIO_INGRESOS[nombre]||INICIO_PROP[nombre];
   if(!ini) return true;
   return !(anio<ini.anio||(anio===ini.anio&&mes<ini.mes));
 }
@@ -650,6 +693,47 @@ function gastoInicioLabel(g){
 
 // Devuelve ingresos y gastos mensuales para un año/mes dado
 function esMesPasado(anio,mes){return anio<ANIO_ACTUAL||(anio===ANIO_ACTUAL&&mes<MES_ACTUAL);}
+
+// Ingreso de una habitación/ingreso en un mes concreto, prorrateando el mes de entrada.
+//  - Meses anteriores a la entrada: 0
+//  - Mes de entrada: proporcional a los días ocupados (desde el día de entrada a fin de mes)
+//  - Meses posteriores: importe completo (con IPC aplicado)
+function ingresoUnidadMes(alquilerBase, fechaEntrada, anio, mes){
+  const base=importeConIPC(alquilerBase,fechaEntrada)||0;
+  if(!fechaEntrada) return base; // sin fecha => comportamiento clásico (siempre completo)
+  const ent=new Date(fechaEntrada);
+  const entAnio=ent.getFullYear(), entMes=ent.getMonth()+1, entDia=ent.getDate();
+  // Antes del mes de entrada => no cobra
+  if(anio<entAnio||(anio===entAnio&&mes<entMes)) return 0;
+  // Mes exacto de entrada y no entró el día 1 => prorratea
+  if(anio===entAnio&&mes===entMes&&entDia>1){
+    const diasMes=new Date(anio,mes,0).getDate();
+    const diasOcupados=diasMes-entDia+1;
+    return Math.round(base*diasOcupados/diasMes);
+  }
+  // Resto de meses => completo
+  return base;
+}
+
+// FUENTE ÚNICA DE VERDAD para los gastos de una propiedad en un mes concreto.
+// La usan tanto calcMes (total cabecera) como detalleMes (desglose), así siempre cuadran.
+// Devuelve un array de {concepto, categoria, importe, tipoAnual, id, esSuministro}.
+function gastosDeMes(p, anio, mes){
+  // 1) Si hay histórico fijo para esa propiedad, manda el histórico.
+  const hist=gastosHistoricos(p.nombre,anio,mes);
+  if(hist){
+    return hist.map((g,i)=>({id:g.id!=null?g.id:('h'+i),concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0,tipoAnual:g.tipoAnual||false,esSuministro:false}));
+  }
+  // 2) Gastos actuales de la propiedad, filtrados por fecha/recurrencia.
+  const lista=(p.gastos||[]).filter(g=>gastoAplicaEnMes(g,anio,mes)).map(g=>({id:g.id,concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0,tipoAnual:g.tipoAnual||false,esSuministro:false}));
+  // 3) Suministros a cargo del propietario (solo meses no pasados, igual que antes).
+  if(!esMesPasado(anio,mes)){
+    (p.suministros||[]).filter(s=>s.pagador==='Propietario').forEach(s=>{
+      lista.push({id:'s'+s.id,concepto:s.tipo||'Suministro',categoria:s.tipo||'Suministro',importe:s.importe||0,tipoAnual:false,esSuministro:true});
+    });
+  }
+  return lista;
+}
 function calcMes(anio, mes){
   if(anio<2023) return{ingresos:0,gastos:0,neto:0,ingresosMios:0,gastosMios:0,netoMio:0};
   let ingresos=0, gastos=0;
@@ -661,30 +745,24 @@ function calcMes(anio, mes){
     const tieneOverrideRenta=getOverrideRentaMes(p.nombre,anio,mes)!==null;
     const histMes=HISTORICO_ALQUILERES_MES[p.nombre];
     const tieneCorrMes=histMes&&histMes[anio+'-'+mes]!==undefined;
-    if(histImp!==null && (esMesPasado(anio,mes)||tieneOverrideRenta||tieneCorrMes)){
+    if(!ingresosActivos(p.nombre,anio,mes)){
+      ingP=0; // comprada pero aún sin alquilar: gastos sí, ingresos no
+    } else if(histImp!==null && (esMesPasado(anio,mes)||tieneOverrideRenta||tieneCorrMes)){
       ingP+=histImp;
     } else {
       if(p.tipo==='habitaciones'){
-        p.habitaciones.filter(h=>h.inquilino).forEach(h=>{ingP+=importeConIPC(h.alquiler,h.entrada)||0;});
+        p.habitaciones.filter(h=>h.inquilino).forEach(h=>{ingP+=ingresoUnidadMes(h.alquiler,h.entrada,anio,mes);});
       } else {
-        (p.ingresos||[]).forEach(ig=>{ingP+=importeConIPC(ig.importe,ig.entrada)||0;});
+        (p.ingresos||[]).forEach(ig=>{ingP+=ingresoUnidadMes(ig.importe,ig.entrada,anio,mes);});
       }
     }
-    if(esMesPasado(anio,mes)){
-      const hg=gastosHistoricos(p.nombre,anio,mes);
-      if(hg){hg.forEach(g=>gasP+=(g.importe||0));}
-      else{(p.gastos||[]).forEach(g=>{if(gastoAplicaEnMes(g,anio,mes))gasP+=(g.importe||0);});}
-    } else {
-      (p.gastos||[]).forEach(g=>{if(gastoAplicaEnMes(g,anio,mes))gasP+=(g.importe||0);});
-      (p.suministros||[]).filter(s=>s.pagador==='Propietario').forEach(s=>gasP+=(s.importe||0));
-    }
+    gastosDeMes(p,anio,mes).forEach(g=>gasP+=(g.importe||0));
     const numSocios=(p.socios||[]).length+1; // tú + socios
     ingresos+=ingP; gastos+=gasP;
     ingresosMios+=ingP/numSocios; gastosMios+=gasP/numSocios;
   });
-  const key=`alq_mes_${anio}_${mes}`;
-  const override=localStorage.getItem(key);
-  if(override){try{const o=JSON.parse(override);if(o.ingresos!==undefined){ingresos=o.ingresos;ingresosMios=o.ingresos;}if(o.gastos!==undefined){gastos=o.gastos;gastosMios=o.gastos;}}catch(e){}}
+  const override=getOverrideMes(anio,mes);
+  if(override){try{const o=override;if(o.ingresos!==undefined){ingresos=o.ingresos;ingresosMios=o.ingresos;}if(o.gastos!==undefined){gastos=o.gastos;gastosMios=o.gastos;}}catch(e){}}
   return{
     ingresos:Math.round(ingresos),gastos:Math.round(gastos),neto:Math.round(ingresos-gastos),
     ingresosMios:Math.round(ingresosMios),gastosMios:Math.round(gastosMios),netoMio:Math.round(ingresosMios-gastosMios)
@@ -697,23 +775,54 @@ function detalleMes(anio, mes){
   return propiedades.map(p=>{
     if(!propActiva(p.nombre,anio,mes)) return null;
     const histImp=alquilerHistorico(p.nombre,anio,mes);
+    const tieneOverrideRenta=getOverrideRentaMes(p.nombre,anio,mes)!==null;
+    const histMes=HISTORICO_ALQUILERES_MES[p.nombre];
+    const tieneCorrMes=histMes&&histMes[anio+'-'+mes]!==undefined;
     let ing=0;
-    if(histImp!==null){ing=histImp;}
-    else if(p.tipo==='habitaciones'){p.habitaciones.filter(h=>h.inquilino).forEach(h=>{ing+=importeConIPC(h.alquiler,h.entrada)||0;});}
-    else{(p.ingresos||[]).forEach(ig=>{ing+=importeConIPC(ig.importe,ig.entrada)||0;});}
-    const hgRaw=gastosHistoricos(p.nombre,anio,mes);
-    const hg=hgRaw||(p.gastos||[]).filter(g=>gastoAplicaEnMes(g,anio,mes));
-    const gasLista=hg.map((g,i)=>({id:g.id!=null?g.id:('h'+i),concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0,tipoAnual:g.tipoAnual||false}));
+    let ingLista=[]; // desglose por habitación/inquilino, con info de prorrateo
+    if(!ingresosActivos(p.nombre,anio,mes)){
+      ing=0; // comprada pero aún sin alquilar
+    } else if(histImp!==null && (esMesPasado(anio,mes)||tieneOverrideRenta||tieneCorrMes)){
+      ing=histImp;
+    } else if(p.tipo==='habitaciones'){
+      p.habitaciones.filter(h=>h.inquilino).forEach(h=>{
+        const imp=ingresoUnidadMes(h.alquiler,h.entrada,anio,mes);
+        ing+=imp;
+        ingLista.push(desgloseUnidad(h.inquilino||('Hab. '+(h.num||'')),h.alquiler,h.entrada,imp,anio,mes));
+      });
+    } else {
+      (p.ingresos||[]).forEach(ig=>{
+        const imp=ingresoUnidadMes(ig.importe,ig.entrada,anio,mes);
+        ing+=imp;
+        ingLista.push(desgloseUnidad(ig.concepto||ig.inquilino||'Ingreso',ig.importe,ig.entrada,imp,anio,mes));
+      });
+    }
+    const gasLista=gastosDeMes(p,anio,mes);
     const gas=gasLista.reduce((a,g)=>a+g.importe,0);
     const numSocios=(p.socios||[]).length+1;
-    return{nombre:p.nombre,propId:p.id,ing,gas,neto:ing-gas,gasLista,numSocios};
+    return{nombre:p.nombre,propId:p.id,ing,gas,neto:ing-gas,gasLista,ingLista,numSocios};
   }).filter(Boolean);
+}
+// Construye el detalle de una habitación/ingreso para mostrar el prorrateo.
+function desgloseUnidad(nombre,alquilerBase,fechaEntrada,importeCobrado,anio,mes){
+  const base=importeConIPC(alquilerBase,fechaEntrada)||0;
+  let nota='';
+  if(fechaEntrada){
+    const ent=new Date(fechaEntrada);
+    if(ent.getFullYear()===anio&&(ent.getMonth()+1)===mes&&ent.getDate()>1){
+      const diasMes=new Date(anio,mes,0).getDate();
+      const diasOcup=diasMes-ent.getDate()+1;
+      nota='proporcional · '+diasOcup+'/'+diasMes+' días (desde el '+ent.getDate()+')';
+    }
+  }
+  return{nombre,base,importe:importeCobrado,nota};
 }
 
 function guardarOverrideMes(anio,mes){
   const i=parseFloat(document.getElementById(`ov-ing-${mes}`).value)||0;
   const g=parseFloat(document.getElementById(`ov-gas-${mes}`).value)||0;
-  localStorage.setItem(`alq_mes_${anio}_${mes}`,JSON.stringify({ingresos:i,gastos:g}));
+  setOverrideMes(anio,mes,{ingresos:i,gastos:g});
+  saveData();
   _mesDesplegado=mes; _mesEditando=null;
   renderSection(currentSection);
 }
@@ -735,6 +844,11 @@ function guardarGastoResumen(anio,mes,propId,gastoId){
     if(g.tipoAnual){g.importeAnual=nuevoImporte*12;g.importe=nuevoImporte;}
     else{g.importe=nuevoImporte;}
     saveData();
+  } else if(String(gastoId).startsWith('s')){
+    // Es un suministro (id 's123') → editar su importe en p.suministros
+    const sId=String(gastoId).slice(1);
+    const s=(p.suministros||[]).find(x=>String(x.id)===sId);
+    if(s){s.importe=nuevoImporte;saveData();}
   }
   // Cerrar editor y refrescar
   const wrap=document.getElementById('rg-'+mes+'-'+propId+'-'+gastoId);
@@ -742,7 +856,8 @@ function guardarGastoResumen(anio,mes,propId,gastoId){
   renderSection(currentSection);
 }
 function borrarOverrideMes(anio,mes){
-  localStorage.removeItem(`alq_mes_${anio}_${mes}`);
+  setOverrideMes(anio,mes,null);
+  saveData();
   renderSection(currentSection);
 }
 function guardarRentaMes(anio,mes,propId){
@@ -754,6 +869,41 @@ function guardarRentaMes(anio,mes,propId){
   saveData();
   _mesDesplegado=mes;
   renderSection(currentSection);
+}
+// Calcula la parte proporcional de una habitación que entra a mitad de mes.
+// prorrateo = alquiler * (días ocupados) / (días del mes)
+// Días ocupados = desde el día de entrada hasta fin de mes, ambos incluidos.
+function prorratearImporte(alquiler,dia,anio,mes){
+  const diasMes=new Date(anio,mes,0).getDate(); // días reales del mes
+  const d=Math.max(1,Math.min(dia||1,diasMes));
+  const diasOcupados=diasMes-d+1;
+  return Math.round(alquiler*diasOcupados/diasMes);
+}
+function calcularProrrateo(mes,propId,anio){
+  const alq=parseFloat((document.getElementById('pr-alq-'+mes+'-'+propId)||{}).value)||0;
+  const dia=parseInt((document.getElementById('pr-dia-'+mes+'-'+propId)||{}).value)||0;
+  const res=document.getElementById('pr-res-'+mes+'-'+propId);
+  if(!res) return;
+  if(!alq||!dia){res.textContent='';return;}
+  const diasMes=new Date(anio,mes,0).getDate();
+  const imp=prorratearImporte(alq,dia,anio,mes);
+  const diasOcupados=diasMes-Math.max(1,Math.min(dia,diasMes))+1;
+  res.textContent='= '+imp+'€ ('+diasOcupados+'/'+diasMes+' días)';
+}
+function aplicarProrrateo(mes,propId){
+  const alq=parseFloat((document.getElementById('pr-alq-'+mes+'-'+propId)||{}).value)||0;
+  const dia=parseInt((document.getElementById('pr-dia-'+mes+'-'+propId)||{}).value)||0;
+  if(!alq||!dia){alert('Pon el alquiler de la habitación y el día de entrada');return;}
+  const imp=prorratearImporte(alq,dia,_resumenAnio,mes);
+  const inp=document.getElementById('rr-inp-'+mes+'-'+propId);
+  if(!inp) return;
+  // Suma el prorrateo al importe que ya haya en el campo de renta del mes
+  const actual=parseFloat(inp.value)||0;
+  inp.value=Math.round(actual+imp);
+  // Limpia los campos del prorrateo para poder añadir otra habitación
+  const a=document.getElementById('pr-alq-'+mes+'-'+propId),d=document.getElementById('pr-dia-'+mes+'-'+propId),r=document.getElementById('pr-res-'+mes+'-'+propId);
+  if(a)a.value='';if(d)d.value='';if(r)r.textContent='';
+  if(a)a.focus();
 }
 function resetRentaMes(anio,mes,propId){
   const p=propiedades.find(x=>x.id==propId);
@@ -883,7 +1033,7 @@ function renderResumen(c){
     const esActual=_resumenAnio===ANIO_ACTUAL&&m===MES_ACTUAL;
     const abierto=_mesDesplegado===m;
     const editando=_mesEditando===m;
-    const tieneOverride=!!localStorage.getItem(`alq_mes_${_resumenAnio}_${m}`);
+    const tieneOverride=getOverrideMes(_resumenAnio,m)!==null;
 
     let detalleHTML='';
     if(abierto&&!esFuturo){
@@ -926,7 +1076,27 @@ function renderResumen(c){
                     <button onclick="event.stopPropagation();guardarRentaMes(${_resumenAnio},${m},'${p.propId}')" style="background:#1e40af;color:white;border:none;border-radius:4px;padding:0.2rem 0.5rem;font-size:0.72rem;cursor:pointer;">✓</button>
                     <button onclick="event.stopPropagation();resetRentaMes(${_resumenAnio},${m},'${p.propId}')" style="background:none;border:1px solid #d1d5db;border-radius:4px;color:#6b7280;cursor:pointer;font-size:0.72rem;padding:0.2rem 0.4rem;" title="Volver al valor por defecto">↩</button>
                   </div>
+                  <div style="margin-top:0.35rem;padding-top:0.35rem;border-top:1px dashed #dbeafe;">
+                    <div style="font-size:0.66rem;color:#6b7280;margin-bottom:0.2rem;">🧮 Ajuste manual de prorrateo (opcional)</div>
+                    <div style="display:flex;gap:0.25rem;align-items:center;flex-wrap:wrap;">
+                      <input type="number" id="pr-alq-${m}-${p.propId}" onclick="event.stopPropagation();" oninput="calcularProrrateo(${m},'${p.propId}',${_resumenAnio})" style="width:62px;font-size:0.72rem;padding:0.2rem 0.3rem;border:1px solid #d1d5db;border-radius:4px;" placeholder="€ hab."/>
+                      <span style="font-size:0.68rem;color:#6b7280;">desde día</span>
+                      <input type="number" min="1" max="31" id="pr-dia-${m}-${p.propId}" onclick="event.stopPropagation();" oninput="calcularProrrateo(${m},'${p.propId}',${_resumenAnio})" style="width:44px;font-size:0.72rem;padding:0.2rem 0.3rem;border:1px solid #d1d5db;border-radius:4px;" placeholder="día"/>
+                      <span id="pr-res-${m}-${p.propId}" style="font-size:0.68rem;color:#065f46;font-weight:600;"></span>
+                      <button onclick="event.stopPropagation();aplicarProrrateo(${m},'${p.propId}')" style="background:#065f46;color:white;border:none;border-radius:4px;padding:0.2rem 0.4rem;font-size:0.68rem;cursor:pointer;">+ Sumar al total</button>
+                      <button onclick="event.stopPropagation();document.getElementById('rr-inp-${m}-${p.propId}').value=0;" style="background:none;border:1px solid #d1d5db;color:#6b7280;border-radius:4px;padding:0.2rem 0.4rem;font-size:0.68rem;cursor:pointer;" title="Pone el importe de arriba a 0 para ir sumando habitación por habitación">↺ Total a 0</button>
+                    </div>
+                    <div style="font-size:0.62rem;color:#9ca3af;margin-top:0.15rem;">El prorrateo por fecha de entrada de cada habitación ya se calcula solo. Usa esto solo para ajustes puntuales (impagos, salidas a mitad de mes, etc.).</div>
+                  </div>
                 </div>
+                ${(p.ingLista&&p.ingLista.length>1||(p.ingLista&&p.ingLista.some(u=>u.nota)))?`
+                <div style="margin-top:0.15rem;margin-left:0.6rem;padding-left:0.4rem;border-left:2px solid #dbeafe;">
+                  ${p.ingLista.map(u=>`
+                    <div style="display:flex;justify-content:space-between;font-size:0.66rem;color:#64748b;padding:0.05rem 0;">
+                      <span>${u.nombre}${u.nota?' <span style="color:#7c3aed;">('+u.nota+')</span>':''}</span>
+                      <span style="font-weight:600;color:#1e40af;">+${fmt(u.importe)}€${u.nota?' <span style="color:#9ca3af;font-weight:400;">de '+fmt(u.base)+'</span>':''}</span>
+                    </div>`).join('')}
+                </div>`:''}
               </div>
               ${p.gasLista.map(g=>`
               <div style="font-size:0.7rem;padding:0.1rem 0;color:#991b1b;">
