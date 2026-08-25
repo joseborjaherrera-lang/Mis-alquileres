@@ -467,6 +467,7 @@ const INICIO_PROP={
   'Oliva 133':   {anio:2023,mes:1},
   'Nueva Europa 3-1':{anio:2023,mes:1},
   'Nueva Europa 3-2':{anio:2023,mes:1},
+  'San Pablo':   {anio:2026,mes:6},
 };
 
 function propActiva(nombre, anio, mes){
@@ -683,10 +684,15 @@ function renderResumen(c){
       <div style="font-weight:700;font-size:1rem;">📅 ${_resumenAnio}</div>
       <button onclick="cambiarAnio(1)" style="background:#f3f4f6;border:none;border-radius:6px;padding:0.3rem 0.7rem;cursor:pointer;font-size:1rem;${_resumenAnio>=ANIO_ACTUAL?'opacity:0.3;cursor:default;':''}" ${_resumenAnio>=ANIO_ACTUAL?'disabled':''}>›</button>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.4rem;margin-bottom:0.7rem;">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.4rem;margin-bottom:0.4rem;">
       <div style="background:#eff6ff;border-radius:8px;padding:0.5rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#6b7280;margin-bottom:0.1rem;">Cobrado</div><div style="font-size:0.9rem;font-weight:700;color:#1e40af;">${fmt(acumI)}€</div></div>
       <div style="background:#fef2f2;border-radius:8px;padding:0.5rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#6b7280;margin-bottom:0.1rem;">Gastos</div><div style="font-size:0.9rem;font-weight:700;color:#991b1b;">${fmt(acumG)}€</div></div>
       <div style="background:${acumN>=0?'#f0fdf4':'#fef2f2'};border-radius:8px;padding:0.5rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#6b7280;margin-bottom:0.1rem;">Neto</div><div style="font-size:0.9rem;font-weight:700;color:${acumN>=0?'#065f46':'#991b1b'};">${fmt(acumN)}€</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.4rem;margin-bottom:0.7rem;">
+      <div style="border-radius:8px;padding:0.35rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#9ca3af;">Media/mes</div><div style="font-size:0.78rem;font-weight:600;color:#6b7280;">${fmt(Math.round(acumI/(numMeses||1)))}€</div></div>
+      <div style="border-radius:8px;padding:0.35rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#9ca3af;">Media/mes</div><div style="font-size:0.78rem;font-weight:600;color:#6b7280;">${fmt(Math.round(acumG/(numMeses||1)))}€</div></div>
+      <div style="border-radius:8px;padding:0.35rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#9ca3af;">Media/mes</div><div style="font-size:0.78rem;font-weight:600;color:#6b7280;">${fmt(Math.round(acumN/(numMeses||1)))}€</div></div>
     </div>
     ${mesesHTML}
     ${alertasHTML?'<hr class="divider" style="margin:0.6rem 0;"/>'+alertasHTML:''}
