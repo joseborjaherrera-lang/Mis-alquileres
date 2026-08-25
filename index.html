@@ -200,7 +200,7 @@ async function loadFromCloud(){
     if(data&&data.data){
       const d=JSON.parse(data.data);
       if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;}
-      if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{}};}
+      if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{},ultimoReset:d.overrides.ultimoReset||null};}
       else{migrarOverridesLocales();}
       return;
     }
@@ -209,7 +209,7 @@ async function loadFromCloud(){
   try{
     const d=JSON.parse(localStorage.getItem('alq_data')||'null');
     if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;}
-    if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{}};}
+    if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{},ultimoReset:d.overrides.ultimoReset||null};}
     else{migrarOverridesLocales();}
     if(d&&d.propiedades)saveData();
   }catch(e){}
@@ -252,7 +252,9 @@ function checkResetMensual(){
   // Lo pagado ESTE mes se conserva como pagado.
   try{
     const claveMes=ANIO_ACTUAL+'-'+MES_ACTUAL;
-    if(localStorage.getItem('alq_ultimo_reset')===claveMes)return;
+    // La marca de "ya reseteado este mes" se guarda en la nube (_overrides), no solo en este navegador,
+    // para que abrir la app desde otro dispositivo no dispare el reset otra vez de forma indebida.
+    if(_overrides.ultimoReset===claveMes)return;
     const esDelMesActual=(f)=>{
       if(!f)return false;
       const d=new Date(f);
@@ -281,6 +283,7 @@ function checkResetMensual(){
         });
       }catch(e){}
     });
+    _overrides.ultimoReset=claveMes;
     localStorage.setItem('alq_ultimo_reset',claveMes);
     saveData();
   }catch(e){}
@@ -572,7 +575,7 @@ const HISTORICO_ALQUILERES_MES={
 // Overrides editables por el usuario, sincronizados en la nube junto con las propiedades.
 //  _overrides.renta  -> { 'Propiedad|AÑO-MES': importe }   (correcciones de renta por mes)
 //  _overrides.mes    -> { 'AÑO_MES': {ingresos,gastos} }    (totales de mes fijados a mano)
-let _overrides={renta:{},mes:{}};
+let _overrides={renta:{},mes:{},ultimoReset:null};
 function getOverrideRentaMes(propNombre,anio,mes){
   const k=propNombre+'|'+anio+'-'+mes;
   return (_overrides.renta&&_overrides.renta[k]!==undefined)?_overrides.renta[k]:null;
@@ -726,10 +729,13 @@ function gastosDeMes(p, anio, mes){
   const hist=gastosHistoricos(p.nombre,anio,mes);
   if(hist){
     hist.forEach((g,i)=>lista.push({id:g.id!=null?g.id:('h'+i),concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0,tipoAnual:g.tipoAnual||false,esSuministro:false}));
+    // Con histórico fijo, los gastos recurrentes ya están cubiertos por él.
+    // Solo se añaden los gastos PUNTUALES (no recurrentes) metidos a mano, como una avería puntual.
+    (p.gastos||[]).filter(g=>!g.recurrente&&gastoAplicaEnMes(g,anio,mes)).forEach(g=>lista.push({id:g.id,concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0,tipoAnual:g.tipoAnual||false,esSuministro:false}));
+  } else {
+    // 2) Sin histórico fijo: todos los gastos de la propiedad, filtrados por fecha/recurrencia.
+    (p.gastos||[]).filter(g=>gastoAplicaEnMes(g,anio,mes)).forEach(g=>lista.push({id:g.id,concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0,tipoAnual:g.tipoAnual||false,esSuministro:false}));
   }
-  // 2) Gastos añadidos a mano en la propiedad (puntuales o recurrentes), filtrados por fecha/recurrencia.
-  //    Se suman SIEMPRE, tenga o no la propiedad histórico fijo — antes se ignoraban si había histórico.
-  (p.gastos||[]).filter(g=>gastoAplicaEnMes(g,anio,mes)).forEach(g=>lista.push({id:g.id,concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0,tipoAnual:g.tipoAnual||false,esSuministro:false}));
   // 3) Suministros a cargo del propietario (solo meses no pasados, igual que antes).
   if(!esMesPasado(anio,mes)){
     (p.suministros||[]).filter(s=>s.pagador==='Propietario').forEach(s=>{
