@@ -91,7 +91,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .info-box{background:#ede9fe;border-radius:8px;padding:0.55rem 0.75rem;font-size:0.76rem;color:#5b21b6;margin-bottom:0.8rem;}
 .alert-box{background:#fff;border-radius:12px;padding:0.8rem 1rem;margin-bottom:0.6rem;border-left:4px solid #ef4444;}
 .alert-box.ipc{border-left-color:#f59e0b;}
-.alert-box.seguro{border-left-color:#8b5cf6;}
 .alert-box.pendiente{border-left-color:#3b82f6;}
 .alert-title{font-size:0.88rem;font-weight:700;margin-bottom:0.15rem;}
 .alert-sub{font-size:0.75rem;color:#888;}
@@ -141,7 +140,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <button class="nav-item" onclick="navigate('propiedades')"><span>🏘️</span><span>Pisos</span></button>
     <button class="nav-item" onclick="navigate('suministros')"><span>💡</span><span>Suministros</span></button>
     <button class="nav-item" onclick="navigate('inquilinos')"><span>👥</span><span>Inquilinos</span></button>
-    <button class="nav-item" onclick="navigate('gestoria')"><span>📤</span><span>Gestoría</span></button>
   </nav>
 </div>
 
@@ -163,17 +161,6 @@ const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {auth:{persistSess
 let currentUser=null, currentSection='resumen', nextId=1000, authMode='login', _sc=0;
 const MES_ACTUAL=new Date().getMonth()+1, ANIO_ACTUAL=new Date().getFullYear();
 const NOMBRES_MES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-// Mes de alquiler al que corresponde un pago que se marca hoy (formato AAAA-MM)
-function mesCorrespondiente(){return ANIO_ACTUAL+'-'+String(MES_ACTUAL).padStart(2,'0');}
-// Formatea un valor AAAA-MM a "Julio 2026". Si no hay valor, cadena vacía.
-function fmtMesCobro(mc){
-  if(!mc||typeof mc!=='string'||mc.indexOf('-')<0)return'';
-  const[a,m]=mc.split('-');const idx=parseInt(m,10)-1;
-  if(idx<0||idx>11)return'';
-  return NOMBRES_MES[idx]+' '+a;
-}
-// Formatea una fecha ISO (AAAA-MM-DD) a "03/08"
-function fmtDiaMes(f){if(!f||f.length<10)return'';return f.slice(8,10)+'/'+f.slice(5,7);}
 let propiedades=[];
 
 // ── SYNC ──────────────────────────────────────────────
@@ -181,13 +168,12 @@ let _saveTimer=null;
 function showToast(msg){const t=document.getElementById('sync-toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000);}
 
 async function saveData(){
-  const payload={propiedades,nextId,overrides:_overrides};
-  try{localStorage.setItem('alq_data',JSON.stringify(payload));}catch(e){}
+  try{localStorage.setItem('alq_data',JSON.stringify({propiedades,nextId}));}catch(e){}
   if(!currentUser)return;
   clearTimeout(_saveTimer);
   _saveTimer=setTimeout(async()=>{
     try{
-      await _sb.from('alquileres').upsert({user_id:currentUser.id,data:JSON.stringify(payload),updated_at:new Date().toISOString()},{onConflict:'user_id'});
+      await _sb.from('alquileres').upsert({user_id:currentUser.id,data:JSON.stringify({propiedades,nextId}),updated_at:new Date().toISOString()},{onConflict:'user_id'});
       showToast('☁️ Guardado');
     }catch(e){}
   },800);
@@ -200,85 +186,25 @@ async function loadFromCloud(){
     if(data&&data.data){
       const d=JSON.parse(data.data);
       if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;}
-      if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{}};}
-      else{migrarOverridesLocales();}
       return;
     }
   }catch(e){}
   // Fallback a datos locales (migración desde versión anterior)
   try{
     const d=JSON.parse(localStorage.getItem('alq_data')||'null');
-    if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;}
-    if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{}};}
-    else{migrarOverridesLocales();}
-    if(d&&d.propiedades)saveData();
+    if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;saveData();}
   }catch(e){}
-}
-
-// Migra los overrides que estaban en claves sueltas de localStorage al objeto _overrides.
-// Se ejecuta una sola vez cuando aún no hay overrides en la nube.
-function migrarOverridesLocales(){
-  try{
-    const r=JSON.parse(localStorage.getItem('alq_renta_override')||'{}');
-    if(r&&typeof r==='object')_overrides.renta=Object.assign({},r,_overrides.renta);
-  }catch(e){}
-  try{
-    Object.keys(localStorage).forEach(k=>{
-      const m=k.match(/^alq_mes_(\d+)_(\d+)$/);
-      if(m){try{const v=JSON.parse(localStorage.getItem(k));if(v)_overrides.mes[m[1]+'_'+m[2]]=v;}catch(e){}}
-    });
-  }catch(e){}
-}
-
-function migrarMesCobro(){
-  // Rellena mesCobro en datos antiguos (pagados antes de existir este campo),
-  // derivándolo de la fecha de pago ya guardada (AAAA-MM).
-  const derivar=(f)=>f&&f.length>=7?f.slice(0,7):null;
-  let cambiado=false;
-  propiedades.forEach(p=>{
-    (p.habitaciones||[]).forEach(h=>{if(h&&h.cobrado&&!h.mesCobro&&h.fechaCobro){h.mesCobro=derivar(h.fechaCobro);cambiado=true;}});
-    (p.ingresos||[]).forEach(ig=>{if(ig&&ig.cobrado&&!ig.mesCobro&&ig.fechaCobro){ig.mesCobro=derivar(ig.fechaCobro);cambiado=true;}});
-    (p.suministros||[]).forEach(s=>{if(s&&s.estado==='Pagado'&&!s.mesCobro&&s.fechaPago){s.mesCobro=derivar(s.fechaPago);cambiado=true;}});
-  });
-  if(cambiado)saveData();
 }
 
 function checkResetMensual(){
-  migrarMesCobro();
-  // Reset automático del día 1 (al abrir la app en un mes nuevo).
-  // Regla: al empezar un mes, todo cobro/suministro cuya ÚLTIMA fecha de pago
-  // no pertenezca al mes actual vuelve a salir como pendiente.
-  // Lo que ya estaba pendiente sigue pendiente (se mezcla, sin distinguir atrasos).
-  // Lo pagado ESTE mes se conserva como pagado.
   try{
     const claveMes=ANIO_ACTUAL+'-'+MES_ACTUAL;
     if(localStorage.getItem('alq_ultimo_reset')===claveMes)return;
-    const esDelMesActual=(f)=>{
-      if(!f)return false;
-      const d=new Date(f);
-      return d.getFullYear()===ANIO_ACTUAL&&(d.getMonth()+1)===MES_ACTUAL;
-    };
     propiedades.forEach(p=>{
       try{
-        if(p.tipo==='habitaciones'){
-          (p.habitaciones||[]).forEach(h=>{
-            if(!h||!h.inquilino)return;
-            // Compatibilidad: si estaba cobrado sin fecha, se le pone la fecha actual (se respeta este mes)
-            if(h.cobrado&&!h.fechaCobro)h.fechaCobro=new Date().toISOString().slice(0,10);
-            if(!esDelMesActual(h.fechaCobro)){h.cobrado=false;h.fechaCobro=null;h.mesCobro=null;}
-          });
-        }else{
-          (p.ingresos||[]).forEach(ig=>{
-            if(!ig||!(ig.inquilino||ig.concepto==='Alquiler'))return;
-            if(ig.cobrado&&!ig.fechaCobro)ig.fechaCobro=new Date().toISOString().slice(0,10);
-            if(!esDelMesActual(ig.fechaCobro)){ig.cobrado=false;ig.fechaCobro=null;ig.mesCobro=null;}
-          });
-        }
-        (p.suministros||[]).forEach(s=>{
-          if(!s||!s.recurrente||s.estado!=='Pagado')return;
-          if(!s.fechaPago)s.fechaPago=new Date().toISOString().slice(0,10);
-          if(!esDelMesActual(s.fechaPago)){s.estado='Pendiente';s.fechaPago=null;s.mesCobro=null;}
-        });
+        if(p.tipo==='habitaciones'){(p.habitaciones||[]).forEach(h=>{if(h&&h.inquilino){h.cobrado=false;h.fechaCobro=null;}});}
+        else{(p.ingresos||[]).forEach(ig=>{if(ig&&(ig.inquilino||ig.concepto==='Alquiler')){ig.cobrado=false;ig.fechaCobro=null;}});}
+        (p.suministros||[]).forEach(s=>{if(s&&s.recurrente&&s.estado==='Pagado'){s.estado='Pendiente';s.fechaPago=null;}});
       }catch(e){}
     });
     localStorage.setItem('alq_ultimo_reset',claveMes);
@@ -408,10 +334,10 @@ mostrarLogin();
 // ── NAV ───────────────────────────────────────────────
 function navigate(s){
   currentSection=s;
-  ['resumen','propiedades','suministros','inquilinos','gestoria'].forEach((sec,i)=>{
+  ['resumen','propiedades','suministros','inquilinos'].forEach((sec,i)=>{
     document.querySelectorAll('.nav-item')[i]&&document.querySelectorAll('.nav-item')[i].classList.toggle('active',sec===s);
   });
-  const titles={resumen:'📊 Resumen',propiedades:'🏘️ Propiedades',suministros:'💡 Suministros',inquilinos:'👥 Inquilinos',detalle:'🏠 Propiedad',gestoria:'📤 Exportar Gestoría'};
+  const titles={resumen:'📊 Resumen',propiedades:'🏘️ Propiedades',suministros:'💡 Suministros',inquilinos:'👥 Inquilinos',detalle:'🏠 Propiedad'};
   document.getElementById('top-title').textContent=titles[s]||s;
   document.getElementById('fab-btn').style.display=(s==='propiedades')?'flex':'none';
   renderSection(s);
@@ -423,32 +349,10 @@ function renderSection(s){
   else if(s==='suministros')renderSuministrosGlobal(c);
   else if(s==='inquilinos')renderInquilinos(c);
   else if(s==='detalle')renderDetalle(c);
-  else if(s==='gestoria')renderGestoria(c);
 }
 
 function fmt(n){return Math.round(n||0).toLocaleString('es-ES');}
 function fmtDec(n){return(Math.round((n||0)*100)/100).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2});}
-
-// Devuelve el mes de consumo de un suministro (mes anterior al actual por defecto)
-// Si el suministro tiene periodo guardado con formato "YYYY-MM" lo usa,
-// si no, calcula el mes anterior al actual.
-function mesConsumoSum(s){
-  // Si tiene campo periodoFecha guardado como "YYYY-MM" lo usamos
-  if(s.periodoFecha){
-    const [y,m]=s.periodoFecha.split('-').map(Number);
-    if(y&&m) return {mes:m,anio:y,label:NOMBRES_MES[m-1]+' '+y};
-  }
-  // Por defecto: mes anterior al actual
-  let mes=MES_ACTUAL-1,anio=ANIO_ACTUAL;
-  if(mes===0){mes=12;anio=ANIO_ACTUAL-1;}
-  return {mes,anio,label:NOMBRES_MES[mes-1]+' '+anio};
-}
-
-function fmtFechaPago(fechaStr){
-  if(!fechaStr) return null;
-  const [y,m,d]=fechaStr.split('-');
-  return d+'/'+m+'/'+y;
-}
 
 // ── CALCS ─────────────────────────────────────────────
 function importeConIPC(importeBase,fechaEntrada){
@@ -505,18 +409,6 @@ function getAlertas(){
         if(dias<=30&&!ig.ipcAplicado)alertas.push({tipo:'ipc',prop:p.nombre,inquilino:ig.inquilino||'Inquilino',dias,anios:aniv.getFullYear()-entrada.getFullYear(),propId:p.id,igId:ig.id,alquiler:ig.importe});
       });
     }
-    // Seguros con renovación próxima (≤45 días)
-    if(p.seguros){
-      ['hogar','alquiler','vida'].forEach(tipo=>{
-        const s=p.seguros[tipo];
-        if(!s||!s.renovacion)return;
-        const ren=new Date(s.renovacion);
-        const dias=Math.ceil((ren-hoy)/(1000*60*60*24));
-        if(dias<=45&&dias>=-1&&!s.alertaDescartada){
-          alertas.push({tipo:'seguro',prop:p.nombre,propId:p.id,tipoSeg:tipo,compania:s.compania||'—',dias,renovacion:s.renovacion});
-        }
-      });
-    }
     // Suministros pendientes
     (p.suministros||[]).filter(s=>s.estado==='Pendiente').forEach(s=>{
       alertas.push({tipo:'suministro',prop:p.nombre,suministro:s.tipo,importe:s.importe,propId:p.id,sId:s.id,pagador:s.pagador});
@@ -524,11 +416,11 @@ function getAlertas(){
     // Cobros pendientes
     if(p.tipo==='habitaciones'){
       p.habitaciones.filter(h=>h.inquilino&&!h.cobrado).forEach(h=>{
-        alertas.push({tipo:'cobro',prop:p.nombre,inquilino:h.inquilino,importe:importeConIPC(h.alquiler,h.entrada),propId:p.id,habId:h.id,mes:MES_ACTUAL,anio:ANIO_ACTUAL});
+        alertas.push({tipo:'cobro',prop:p.nombre,inquilino:h.inquilino,importe:h.alquiler,propId:p.id,habId:h.id});
       });
     }else{
       (p.ingresos||[]).filter(ig=>!ig.cobrado&&ig.importe>0).forEach(ig=>{
-        alertas.push({tipo:'cobro',prop:p.nombre,inquilino:ig.inquilino||'Alquiler',importe:importeConIPC(ig.importe,ig.entrada),propId:p.id,igId:ig.id,mes:MES_ACTUAL,anio:ANIO_ACTUAL});
+        alertas.push({tipo:'cobro',prop:p.nombre,inquilino:ig.inquilino||'Alquiler',importe:ig.importe,propId:p.id,igId:ig.id});
       });
     }
   });
@@ -544,57 +436,6 @@ const HISTORICO_ALQUILERES={
   'Nueva Europa 3-1':{2023:650, 2024:650, 2025:650, 2026:650},
   'Dos Hermanas':    {2025:700, 2026:714},
 };
-// Correcciones puntuales por meses concretos (sobrescriben el valor anual de arriba).
-// Formato: { 'NombrePropiedad': { 'AÑO-MES': importe, ... } }
-// Desglose real de 2026 indicado por el usuario:
-//  - Nueva Europa 3-1: 650€ todo el año
-//  - Nueva Europa 3-2: 650€ ene-abr, 700€ desde mayo
-//  - Oliva 133: 700€ ene-abr, 714€ desde mayo
-//  - Dos Hermanas: 700€ ene-may, 714€ desde junio
-const HISTORICO_ALQUILERES_MES={
-  'Oliva 133':{
-    '2026-1':700, '2026-2':700, '2026-3':700, '2026-4':700,
-    '2026-5':714, '2026-6':714, '2026-7':714, '2026-8':714, '2026-9':714, '2026-10':714, '2026-11':714, '2026-12':714,
-  },
-  'Nueva Europa 3-2':{
-    '2026-1':650, '2026-2':650, '2026-3':650, '2026-4':650,
-    '2026-5':700, '2026-6':700, '2026-7':700, '2026-8':700, '2026-9':700, '2026-10':700, '2026-11':700, '2026-12':700,
-  },
-  'Nueva Europa 3-1':{
-    '2026-1':650, '2026-2':650, '2026-3':650, '2026-4':650, '2026-5':650, '2026-6':650,
-    '2026-7':650, '2026-8':650, '2026-9':650, '2026-10':650, '2026-11':650, '2026-12':650,
-  },
-  'Dos Hermanas':{
-    '2026-1':700, '2026-2':700, '2026-3':700, '2026-4':700, '2026-5':700,
-    '2026-6':714, '2026-7':714, '2026-8':714, '2026-9':714, '2026-10':714, '2026-11':714, '2026-12':714,
-  },
-};
-// Overrides editables por el usuario, sincronizados en la nube junto con las propiedades.
-//  _overrides.renta  -> { 'Propiedad|AÑO-MES': importe }   (correcciones de renta por mes)
-//  _overrides.mes    -> { 'AÑO_MES': {ingresos,gastos} }    (totales de mes fijados a mano)
-let _overrides={renta:{},mes:{}};
-function getOverrideRentaMes(propNombre,anio,mes){
-  const k=propNombre+'|'+anio+'-'+mes;
-  return (_overrides.renta&&_overrides.renta[k]!==undefined)?_overrides.renta[k]:null;
-}
-function setOverrideRentaMes(propNombre,anio,mes,importe){
-  _overrides.renta=_overrides.renta||{};
-  const k=propNombre+'|'+anio+'-'+mes;
-  if(importe===null||importe===''){delete _overrides.renta[k];}
-  else{_overrides.renta[k]=Math.round(parseFloat(importe)||0);}
-  // saveData persiste _overrides en la nube (y en local como respaldo)
-}
-// Acceso a los overrides de total de mes (antes claves sueltas alq_mes_AÑO_MES)
-function getOverrideMes(anio,mes){
-  const k=anio+'_'+mes;
-  return (_overrides.mes&&_overrides.mes[k]!==undefined)?_overrides.mes[k]:null;
-}
-function setOverrideMes(anio,mes,val){
-  _overrides.mes=_overrides.mes||{};
-  const k=anio+'_'+mes;
-  if(val===null){delete _overrides.mes[k];}
-  else{_overrides.mes[k]=val;}
-}
 // Gastos fijos por propiedad (€/mes, siempre iguales desde 2023)
 const HISTORICO_GASTOS={
   'Oliva 133':[
@@ -619,47 +460,23 @@ const HISTORICO_GASTOS={
     {concepto:'Hipoteca',         categoria:'Hipoteca',  importe:385},
     {concepto:'Seguro hogar',     categoria:'Seguro',    importe:21},
   ],
-  // San Pablo: gastos desde enero 2026 (usa gastos reales de la propiedad)
 };
 // Inicio de cada propiedad en el histórico
-// Inicio de GASTOS de cada propiedad (cuando se compra / empieza a generar costes)
 const INICIO_PROP={
-  'Dos Hermanas':    {anio:2025,mes:6},
-  'Oliva 133':       {anio:2023,mes:1},
+  'Dos Hermanas':{anio:2025,mes:6},
+  'Oliva 133':   {anio:2023,mes:1},
   'Nueva Europa 3-1':{anio:2023,mes:1},
   'Nueva Europa 3-2':{anio:2023,mes:1},
-  'San Pablo':       {anio:2026,mes:1},
-};
-// Inicio de INGRESOS (cuando empieza a entrar dinero de alquiler).
-// Si no se indica, coincide con INICIO_PROP. San Pablo: comprada en enero pero
-// alquilada desde junio, así que gastos desde enero e ingresos desde junio.
-const INICIO_INGRESOS={
-  'San Pablo':       {anio:2026,mes:6},
 };
 
 function propActiva(nombre, anio, mes){
-  const p=propiedades.find(x=>x.nombre===nombre);
-  const ini=(p&&p.inicioGastos)||INICIO_PROP[nombre];
-  if(!ini) return true;
-  return !(anio<ini.anio||(anio===ini.anio&&mes<ini.mes));
-}
-// ¿Hay ingresos de esta propiedad en este mes? (puede empezar más tarde que los gastos)
-function ingresosActivos(nombre, anio, mes){
-  const p=propiedades.find(x=>x.nombre===nombre);
-  const ini=(p&&p.inicioIngresos)||INICIO_INGRESOS[nombre]||(p&&p.inicioGastos)||INICIO_PROP[nombre];
+  const ini=INICIO_PROP[nombre];
   if(!ini) return true;
   return !(anio<ini.anio||(anio===ini.anio&&mes<ini.mes));
 }
 
 function alquilerHistorico(propNombre, anio, mes){
   if(!propActiva(propNombre,anio,mes)) return 0;
-  // 1) Override editable por el usuario para ese mes concreto
-  const ov=getOverrideRentaMes(propNombre,anio,mes);
-  if(ov!==null) return ov;
-  // 2) Corrección puntual por mes (datos fijos del histórico)
-  const histMes=HISTORICO_ALQUILERES_MES[propNombre];
-  if(histMes&&histMes[anio+'-'+mes]!==undefined) return histMes[anio+'-'+mes];
-  // 3) Valor anual
   const hist=HISTORICO_ALQUILERES[propNombre];
   if(!hist) return null;
   let imp=0;
@@ -675,100 +492,36 @@ function gastosHistoricos(propNombre, anio, mes){
   return HISTORICO_GASTOS[propNombre]||null;
 }
 
-// ¿Aplica este gasto en el mes/año indicado?
-//  - Recurrente: cuenta desde su mes/año de inicio en adelante.
-//  - Puntual: solo en su mes/año exacto.
-//  - Sin fecha (gastos antiguos): se trata como recurrente siempre (comportamiento anterior).
-function gastoAplicaEnMes(g, anio, mes){
-  if(g.anio==null||g.mes==null) return true;
-  if(g.recurrente){
-    return anio>g.anio||(anio===g.anio&&mes>=g.mes);
-  }
-  return anio===g.anio&&mes===g.mes;
-}
-// Etiqueta legible del inicio de un gasto: "Jun 2026" (recurrente = "desde Jun 2026")
-function gastoInicioLabel(g){
-  if(g.mes==null||g.anio==null) return '';
-  const nm=NOMBRES_MES[(g.mes-1+12)%12]||g.mes;
-  return (g.recurrente?'desde ':'')+nm.slice(0,3)+' '+g.anio;
-}
-
 // Devuelve ingresos y gastos mensuales para un año/mes dado
-function esMesPasado(anio,mes){return anio<ANIO_ACTUAL||(anio===ANIO_ACTUAL&&mes<MES_ACTUAL);}
-
-// Ingreso de una habitación/ingreso en un mes concreto, prorrateando el mes de entrada.
-//  - Meses anteriores a la entrada: 0
-//  - Mes de entrada: proporcional a los días ocupados (desde el día de entrada a fin de mes)
-//  - Meses posteriores: importe completo (con IPC aplicado)
-function ingresoUnidadMes(alquilerBase, fechaEntrada, anio, mes){
-  const base=importeConIPC(alquilerBase,fechaEntrada)||0;
-  if(!fechaEntrada) return base; // sin fecha => comportamiento clásico (siempre completo)
-  const ent=new Date(fechaEntrada);
-  const entAnio=ent.getFullYear(), entMes=ent.getMonth()+1, entDia=ent.getDate();
-  // Antes del mes de entrada => no cobra
-  if(anio<entAnio||(anio===entAnio&&mes<entMes)) return 0;
-  // Mes exacto de entrada y no entró el día 1 => prorratea
-  if(anio===entAnio&&mes===entMes&&entDia>1){
-    const diasMes=new Date(anio,mes,0).getDate();
-    const diasOcupados=diasMes-entDia+1;
-    return Math.round(base*diasOcupados/diasMes);
-  }
-  // Resto de meses => completo
-  return base;
-}
-
-// FUENTE ÚNICA DE VERDAD para los gastos de una propiedad en un mes concreto.
-// La usan tanto calcMes (total cabecera) como detalleMes (desglose), así siempre cuadran.
-// Devuelve un array de {concepto, categoria, importe, tipoAnual, id, esSuministro}.
-function gastosDeMes(p, anio, mes){
-  // 1) Si hay histórico fijo para esa propiedad, manda el histórico.
-  const hist=gastosHistoricos(p.nombre,anio,mes);
-  if(hist){
-    return hist.map((g,i)=>({id:g.id!=null?g.id:('h'+i),concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0,tipoAnual:g.tipoAnual||false,esSuministro:false}));
-  }
-  // 2) Gastos actuales de la propiedad, filtrados por fecha/recurrencia.
-  const lista=(p.gastos||[]).filter(g=>gastoAplicaEnMes(g,anio,mes)).map(g=>({id:g.id,concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0,tipoAnual:g.tipoAnual||false,esSuministro:false}));
-  // 3) Suministros a cargo del propietario (solo meses no pasados, igual que antes).
-  if(!esMesPasado(anio,mes)){
-    (p.suministros||[]).filter(s=>s.pagador==='Propietario').forEach(s=>{
-      lista.push({id:'s'+s.id,concepto:s.tipo||'Suministro',categoria:s.tipo||'Suministro',importe:s.importe||0,tipoAnual:false,esSuministro:true});
-    });
-  }
-  return lista;
-}
 function calcMes(anio, mes){
-  if(anio<2023) return{ingresos:0,gastos:0,neto:0,ingresosMios:0,gastosMios:0,netoMio:0};
+  // Solo calcular desde 2023
+  if(anio<2023) return{ingresos:0,gastos:0,neto:0};
   let ingresos=0, gastos=0;
-  let ingresosMios=0, gastosMios=0;
   propiedades.forEach(p=>{
-    if(!propActiva(p.nombre,anio,mes)) return;
-    let ingP=0, gasP=0;
-    const histImp=alquilerHistorico(p.nombre,anio,mes);
-    const tieneOverrideRenta=getOverrideRentaMes(p.nombre,anio,mes)!==null;
-    const histMes=HISTORICO_ALQUILERES_MES[p.nombre];
-    const tieneCorrMes=histMes&&histMes[anio+'-'+mes]!==undefined;
-    if(!ingresosActivos(p.nombre,anio,mes)){
-      ingP=0; // comprada pero aún sin alquilar: gastos sí, ingresos no
-    } else if(histImp!==null && (esMesPasado(anio,mes)||tieneOverrideRenta||tieneCorrMes)){
-      ingP+=histImp;
-    } else {
+    const histImp=alquilerHistorico(p.nombre, anio, mes);
+    if(histImp!==null){
+      ingresos+=histImp;
+    } else if(propActiva(p.nombre,anio,mes)){
       if(p.tipo==='habitaciones'){
-        p.habitaciones.filter(h=>h.inquilino).forEach(h=>{ingP+=ingresoUnidadMes(h.alquiler,h.entrada,anio,mes);});
+        p.habitaciones.filter(h=>h.inquilino).forEach(h=>{ingresos+=importeConIPC(h.alquiler,h.entrada)||0;});
       } else {
-        (p.ingresos||[]).forEach(ig=>{ingP+=ingresoUnidadMes(ig.importe,ig.entrada,anio,mes);});
+        (p.ingresos||[]).forEach(ig=>{ingresos+=importeConIPC(ig.importe,ig.entrada)||0;});
       }
     }
-    gastosDeMes(p,anio,mes).forEach(g=>gasP+=(g.importe||0));
-    const numSocios=(p.socios||[]).length+1; // tú + socios
-    ingresos+=ingP; gastos+=gasP;
-    ingresosMios+=ingP/numSocios; gastosMios+=gasP/numSocios;
+    // Gastos: usar histórico si existe
+    const hg=gastosHistoricos(p.nombre,anio,mes);
+    if(hg){
+      hg.forEach(g=>gastos+=(g.importe||0));
+    } else if(propActiva(p.nombre,anio,mes)){
+      (p.gastos||[]).forEach(g=>gastos+=(g.importe||0));
+      (p.suministros||[]).filter(s=>s.pagador==='Propietario').forEach(s=>gastos+=(s.importe||0));
+    }
   });
-  const override=getOverrideMes(anio,mes);
-  if(override){try{const o=override;if(o.ingresos!==undefined){ingresos=o.ingresos;ingresosMios=o.ingresos;}if(o.gastos!==undefined){gastos=o.gastos;gastosMios=o.gastos;}}catch(e){}}
-  return{
-    ingresos:Math.round(ingresos),gastos:Math.round(gastos),neto:Math.round(ingresos-gastos),
-    ingresosMios:Math.round(ingresosMios),gastosMios:Math.round(gastosMios),netoMio:Math.round(ingresosMios-gastosMios)
-  };
+  // Override manual
+  const key=`alq_mes_${anio}_${mes}`;
+  const override=localStorage.getItem(key);
+  if(override){try{const o=JSON.parse(override);if(o.ingresos!==undefined)ingresos=o.ingresos;if(o.gastos!==undefined)gastos=o.gastos;}catch(e){}}
+  return{ingresos:Math.round(ingresos),gastos:Math.round(gastos),neto:Math.round(ingresos-gastos)};
 }
 
 // Detalle completo de un mes: por propiedad, con ingresos y gastos desglosados
@@ -777,142 +530,26 @@ function detalleMes(anio, mes){
   return propiedades.map(p=>{
     if(!propActiva(p.nombre,anio,mes)) return null;
     const histImp=alquilerHistorico(p.nombre,anio,mes);
-    const tieneOverrideRenta=getOverrideRentaMes(p.nombre,anio,mes)!==null;
-    const histMes=HISTORICO_ALQUILERES_MES[p.nombre];
-    const tieneCorrMes=histMes&&histMes[anio+'-'+mes]!==undefined;
     let ing=0;
-    let ingLista=[]; // desglose por habitación/inquilino, con info de prorrateo
-    if(!ingresosActivos(p.nombre,anio,mes)){
-      ing=0; // comprada pero aún sin alquilar
-    } else if(histImp!==null && (esMesPasado(anio,mes)||tieneOverrideRenta||tieneCorrMes)){
-      ing=histImp;
-    } else if(p.tipo==='habitaciones'){
-      p.habitaciones.filter(h=>h.inquilino).forEach(h=>{
-        const imp=ingresoUnidadMes(h.alquiler,h.entrada,anio,mes);
-        ing+=imp;
-        ingLista.push(desgloseUnidad(h.inquilino||('Hab. '+(h.num||'')),h.alquiler,h.entrada,imp,anio,mes));
-      });
-    } else {
-      (p.ingresos||[]).forEach(ig=>{
-        const imp=ingresoUnidadMes(ig.importe,ig.entrada,anio,mes);
-        ing+=imp;
-        ingLista.push(desgloseUnidad(ig.concepto||ig.inquilino||'Ingreso',ig.importe,ig.entrada,imp,anio,mes));
-      });
-    }
-    const gasLista=gastosDeMes(p,anio,mes);
+    if(histImp!==null){ing=histImp;}
+    else if(p.tipo==='habitaciones'){p.habitaciones.filter(h=>h.inquilino).forEach(h=>{ing+=importeConIPC(h.alquiler,h.entrada)||0;});}
+    else{(p.ingresos||[]).forEach(ig=>{ing+=importeConIPC(ig.importe,ig.entrada)||0;});}
+    const hg=gastosHistoricos(p.nombre,anio,mes)||p.gastos||[];
+    const gasLista=hg.map(g=>({concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0}));
     const gas=gasLista.reduce((a,g)=>a+g.importe,0);
-    const numSocios=(p.socios||[]).length+1;
-    return{nombre:p.nombre,propId:p.id,ing,gas,neto:ing-gas,gasLista,ingLista,numSocios};
+    return{nombre:p.nombre,ing,gas,neto:ing-gas,gasLista};
   }).filter(Boolean);
-}
-// Construye el detalle de una habitación/ingreso para mostrar el prorrateo.
-function desgloseUnidad(nombre,alquilerBase,fechaEntrada,importeCobrado,anio,mes){
-  const base=importeConIPC(alquilerBase,fechaEntrada)||0;
-  let nota='';
-  if(fechaEntrada){
-    const ent=new Date(fechaEntrada);
-    if(ent.getFullYear()===anio&&(ent.getMonth()+1)===mes&&ent.getDate()>1){
-      const diasMes=new Date(anio,mes,0).getDate();
-      const diasOcup=diasMes-ent.getDate()+1;
-      nota='proporcional · '+diasOcup+'/'+diasMes+' días (desde el '+ent.getDate()+')';
-    }
-  }
-  return{nombre,base,importe:importeCobrado,nota};
 }
 
 function guardarOverrideMes(anio,mes){
   const i=parseFloat(document.getElementById(`ov-ing-${mes}`).value)||0;
   const g=parseFloat(document.getElementById(`ov-gas-${mes}`).value)||0;
-  setOverrideMes(anio,mes,{ingresos:i,gastos:g});
-  saveData();
+  localStorage.setItem(`alq_mes_${anio}_${mes}`,JSON.stringify({ingresos:i,gastos:g}));
   _mesDesplegado=mes; _mesEditando=null;
   renderSection(currentSection);
 }
-function toggleEditGastoResumen(id){
-  const el=document.getElementById(id);
-  if(el) el.style.display=el.style.display==='none'?'block':'none';
-}
-function guardarGastoResumen(anio,mes,propId,gastoId){
-  // Buscar el gasto real en la propiedad y actualizarlo
-  const p=propiedades.find(x=>x.id==propId);
-  if(!p) return;
-  const inpId='rg-inp-'+mes+'-'+propId+'-'+gastoId;
-  const inp=document.getElementById(inpId);
-  if(!inp) return;
-  const nuevoImporte=parseFloat(inp.value)||0;
-  // Buscar gasto por id (puede ser id numérico o histórico 'h0','h1'...)
-  const g=(p.gastos||[]).find(x=>x.id==gastoId);
-  if(g){
-    if(g.tipoAnual){g.importeAnual=nuevoImporte*12;g.importe=nuevoImporte;}
-    else{g.importe=nuevoImporte;}
-    saveData();
-  } else if(String(gastoId).startsWith('s')){
-    // Es un suministro (id 's123') → editar su importe en p.suministros
-    const sId=String(gastoId).slice(1);
-    const s=(p.suministros||[]).find(x=>String(x.id)===sId);
-    if(s){s.importe=nuevoImporte;saveData();}
-  }
-  // Cerrar editor y refrescar
-  const wrap=document.getElementById('rg-'+mes+'-'+propId+'-'+gastoId);
-  if(wrap) wrap.style.display='none';
-  renderSection(currentSection);
-}
 function borrarOverrideMes(anio,mes){
-  setOverrideMes(anio,mes,null);
-  saveData();
-  renderSection(currentSection);
-}
-function guardarRentaMes(anio,mes,propId){
-  const p=propiedades.find(x=>x.id==propId);
-  if(!p) return;
-  const inp=document.getElementById('rr-inp-'+mes+'-'+propId);
-  if(!inp) return;
-  setOverrideRentaMes(p.nombre,anio,mes,inp.value);
-  saveData();
-  _mesDesplegado=mes;
-  renderSection(currentSection);
-}
-// Calcula la parte proporcional de una habitación que entra a mitad de mes.
-// prorrateo = alquiler * (días ocupados) / (días del mes)
-// Días ocupados = desde el día de entrada hasta fin de mes, ambos incluidos.
-function prorratearImporte(alquiler,dia,anio,mes){
-  const diasMes=new Date(anio,mes,0).getDate(); // días reales del mes
-  const d=Math.max(1,Math.min(dia||1,diasMes));
-  const diasOcupados=diasMes-d+1;
-  return Math.round(alquiler*diasOcupados/diasMes);
-}
-function calcularProrrateo(mes,propId,anio){
-  const alq=parseFloat((document.getElementById('pr-alq-'+mes+'-'+propId)||{}).value)||0;
-  const dia=parseInt((document.getElementById('pr-dia-'+mes+'-'+propId)||{}).value)||0;
-  const res=document.getElementById('pr-res-'+mes+'-'+propId);
-  if(!res) return;
-  if(!alq||!dia){res.textContent='';return;}
-  const diasMes=new Date(anio,mes,0).getDate();
-  const imp=prorratearImporte(alq,dia,anio,mes);
-  const diasOcupados=diasMes-Math.max(1,Math.min(dia,diasMes))+1;
-  res.textContent='= '+imp+'€ ('+diasOcupados+'/'+diasMes+' días)';
-}
-function aplicarProrrateo(mes,propId){
-  const alq=parseFloat((document.getElementById('pr-alq-'+mes+'-'+propId)||{}).value)||0;
-  const dia=parseInt((document.getElementById('pr-dia-'+mes+'-'+propId)||{}).value)||0;
-  if(!alq||!dia){alert('Pon el alquiler de la habitación y el día de entrada');return;}
-  const imp=prorratearImporte(alq,dia,_resumenAnio,mes);
-  const inp=document.getElementById('rr-inp-'+mes+'-'+propId);
-  if(!inp) return;
-  // Suma el prorrateo al importe que ya haya en el campo de renta del mes
-  const actual=parseFloat(inp.value)||0;
-  inp.value=Math.round(actual+imp);
-  // Limpia los campos del prorrateo para poder añadir otra habitación
-  const a=document.getElementById('pr-alq-'+mes+'-'+propId),d=document.getElementById('pr-dia-'+mes+'-'+propId),r=document.getElementById('pr-res-'+mes+'-'+propId);
-  if(a)a.value='';if(d)d.value='';if(r)r.textContent='';
-  if(a)a.focus();
-}
-function resetRentaMes(anio,mes,propId){
-  const p=propiedades.find(x=>x.id==propId);
-  if(!p) return;
-  setOverrideRentaMes(p.nombre,anio,mes,null);
-  saveData();
-  _mesDesplegado=mes;
+  localStorage.removeItem(`alq_mes_${anio}_${mes}`);
   renderSection(currentSection);
 }
 
@@ -920,41 +557,20 @@ let _resumenAnio=ANIO_ACTUAL;
 let _mesDesplegado=null;
 let _mesEditando=null;
 
-let _modoSocio=true; // Siempre mostrar solo mi parte (fijo, no se puede ver el total con socios)
-function toggleModoSocio(){/* desactivado: siempre se muestra solo mi parte */}
-// Selecciona el valor total o "mi parte" según el modo activo.
-// d es un objeto de calcMes; campo es 'ingresos','gastos' o 'neto'.
-function V(d,campo){
-  if(_modoSocio){
-    if(campo==='ingresos') return d.ingresosMios;
-    if(campo==='gastos') return d.gastosMios;
-    if(campo==='neto') return d.netoMio;
-  }
-  return d[campo];
-}
-// Igual que V pero para una fila de propiedad de detalleMes (ing/gas), aplicando socios
-function V2(x,campo){
-  const val=x[campo]||0;
-  return _modoSocio?val/(x.numSocios||1):val;
-}
-
 function renderResumen(c){
   const alertas=getAlertas();
   const alertasCobro=alertas.filter(a=>a.tipo==='cobro');
   const alertasIPC=alertas.filter(a=>a.tipo==='ipc');
   const alertasSum=alertas.filter(a=>a.tipo==='suministro');
-  const alertasSeguros=alertas.filter(a=>a.tipo==='seguro');
 
   let alertasHTML='';
   if(alertas.length){
     alertasHTML=`<div class="sec-title" style="font-size:0.85rem;">🔔 Alertas (${alertas.length})</div>`;
     alertasCobro.forEach(a=>{
-      alertasHTML+=`<div class="alert-box pendiente" id="alerta-cobro-${a.propId}-${a.habId||0}-${a.igId||0}" style="padding:0.6rem 0.8rem;margin-bottom:0.4rem;">
+      alertasHTML+=`<div class="alert-box pendiente" style="padding:0.6rem 0.8rem;margin-bottom:0.4rem;">
         <div class="alert-title" style="font-size:0.82rem;">💰 ${a.prop} — ${a.inquilino}</div>
-        <div class="alert-sub" style="font-size:0.75rem;">${fmt(a.importe)}€ · <strong>${NOMBRES_MES[(a.mes||MES_ACTUAL)-1]} ${a.anio||ANIO_ACTUAL}</strong></div>
-        <div class="alert-action" style="margin-top:0.4rem;">
-          <span class="estado-pill pill-pend" style="cursor:pointer;font-size:0.78rem;padding:0.3rem 0.7rem;" onclick="marcarCobroDesdeAlerta(${a.propId},${a.habId||'null'},${a.igId||'null'},this)">⏳ Pendiente de pago · toca para cobrar</span>
-        </div>
+        <div class="alert-sub" style="font-size:0.75rem;">${fmt(a.importe)}€ este mes</div>
+        <div class="alert-action"><button class="btn btn-success btn-sm" onclick="marcarCobroPendiente(${a.propId},${a.habId||'null'},${a.igId||'null'})">✓ Cobrado</button></div>
       </div>`;
     });
     alertasIPC.forEach(a=>{
@@ -967,50 +583,11 @@ function renderResumen(c){
         </div>
       </div>`;
     });
-    alertasSeguros.forEach(a=>{
-      const labelTipo={'hogar':'🏠 Hogar','alquiler':'🔑 Alquiler','vida':'❤️ Vida'}[a.tipoSeg]||a.tipoSeg;
-      alertasHTML+=`<div class="alert-box seguro" style="padding:0.6rem 0.8rem;margin-bottom:0.4rem;">
-        <div class="alert-title" style="font-size:0.82rem;">🛡️ Renovación seguro — ${a.prop}</div>
-        <div class="alert-sub" style="font-size:0.75rem;">${labelTipo} · ${a.compania}${a.dias<=0?' <strong>HOY / VENCIDO</strong>':' en <strong>'+a.dias+'d</strong>'}</div>
-        <div class="alert-action" style="gap:0.4rem;margin-top:0.4rem;">
-          <button class="btn btn-sm" style="background:#ede9fe;color:#5b21b6;" onclick="window._dPropId=${a.propId};window._dTab='seguros';currentSection='detalle';renderDetalle(document.getElementById('main-content'))">👁️ Ver seguro</button>
-          <button class="btn btn-secondary btn-sm" onclick="descartarSeguroAlerta(${a.propId},'${a.tipoSeg}')">✕</button>
-        </div>
-      </div>`;
-    });
     alertasSum.forEach(a=>{
-      const p2=propiedades.find(x=>x.id===a.propId),s2=p2?(p2.suministros||[]).find(x=>x.id===a.sId):null;
-      const periodo=s2?mesConsumoSum(s2):{label:NOMBRES_MES[MES_ACTUAL-2>=0?MES_ACTUAL-2:11]+' '+(MES_ACTUAL-1===0?ANIO_ACTUAL-1:ANIO_ACTUAL)};
-      const yaP=s2&&s2.estado==='Pagado';
-      alertasHTML+=`<div class="alert-box${yaP?' ':''}${yaP?'':''}${yaP?'" style="border-left-color:#10b981;background:#d1fae5;':'"'} id="sum-alert-${a.propId}-${a.sId}" style="padding:0.6rem 0.8rem;margin-bottom:0.4rem;border-left:4px solid ${yaP?'#10b981':'#ef4444'};">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.4rem;">
-          <div class="alert-title" id="sum-alert-title-${a.propId}-${a.sId}" style="font-size:0.82rem;flex:1;">💡 ${a.prop} — ${a.suministro}</div>
-          <button onclick="toggleEditSumAlerta(${a.propId},${a.sId})" style="background:none;border:none;cursor:pointer;font-size:0.8rem;color:#6b7280;flex-shrink:0;" title="Editar título y período">✏️</button>
-        </div>
-        <div class="alert-sub" style="font-size:0.75rem;">${fmt(a.importe)}€${a.pagador?' · '+a.pagador:''} · <strong>Consumo: ${periodo.label}</strong></div>
-        ${yaP?`<div style="font-size:0.72rem;color:#065f46;margin-top:0.3rem;">✅ Pagado el ${s2&&s2.fechaPago?fmtFechaPago(s2.fechaPago):'—'}</div>`:''}
-        <div id="sum-alert-edit-${a.propId}-${a.sId}" style="display:none;margin-top:0.4rem;background:#f8fafc;border-radius:6px;padding:0.4rem 0.5rem;border:1px solid #e5e7eb;">
-          <div style="font-size:0.72rem;color:#888;margin-bottom:0.3rem;font-weight:600;">Editar suministro</div>
-          <div style="display:flex;flex-direction:column;gap:0.3rem;">
-            <div style="display:flex;gap:0.3rem;align-items:center;">
-              <span style="font-size:0.72rem;color:#666;min-width:44px;">Título</span>
-              <input id="sum-alert-tit-${a.propId}-${a.sId}" type="text" value="${a.suministro}" style="flex:1;font-size:0.78rem;padding:0.2rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
-            </div>
-            <div style="display:flex;gap:0.3rem;align-items:center;">
-              <span style="font-size:0.72rem;color:#666;min-width:44px;">Período</span>
-              <input id="sum-alert-per-${a.propId}-${a.sId}" type="month" value="${s2&&s2.periodoFecha?s2.periodoFecha:(ANIO_ACTUAL+'-'+(MES_ACTUAL-1===0?'12':String(MES_ACTUAL-1).padStart(2,'0')))}" style="flex:1;font-size:0.78rem;padding:0.2rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
-            </div>
-            ${yaP?`<div style="display:flex;gap:0.3rem;align-items:center;">
-              <span style="font-size:0.72rem;color:#666;min-width:44px;">F.pago</span>
-              <input id="sum-alert-fp-${a.propId}-${a.sId}" type="date" value="${s2&&s2.fechaPago?s2.fechaPago:new Date().toISOString().slice(0,10)}" style="flex:1;font-size:0.78rem;padding:0.2rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
-            </div>`:''}
-            <div style="display:flex;gap:0.3rem;margin-top:0.1rem;">
-              <button onclick="guardarEditSumAlerta(${a.propId},${a.sId},${yaP})" style="background:#1a1a1a;color:white;border:none;border-radius:4px;padding:0.2rem 0.6rem;font-size:0.75rem;cursor:pointer;flex:1;">✓ Guardar</button>
-              <button onclick="document.getElementById('sum-alert-edit-${a.propId}-${a.sId}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:4px;color:#6b7280;cursor:pointer;font-size:0.75rem;padding:0.2rem 0.4rem;">✕</button>
-            </div>
-          </div>
-        </div>
-        ${!yaP?`<div class="alert-action" style="margin-top:0.4rem;"><span class="estado-pill pill-pend" style="cursor:pointer;font-size:0.78rem;padding:0.3rem 0.7rem;" onclick="marcarSumPagadoDesdeAlerta(${a.propId},${a.sId},this)">⏳ Pendiente de pago · toca para pagar</span></div>`:''}
+      alertasHTML+=`<div class="alert-box" id="sum-alert-${a.propId}-${a.sId}" style="padding:0.6rem 0.8rem;margin-bottom:0.4rem;">
+        <div class="alert-title" style="font-size:0.82rem;">💡 ${a.prop} — ${a.suministro}</div>
+        <div class="alert-sub" style="font-size:0.75rem;">${fmt(a.importe)}€${a.pagador?' · '+a.pagador:''}</div>
+        <div class="alert-action"><button class="btn btn-success btn-sm" onclick="marcarSumPagadoAlerta(${a.propId},${a.sId},this)">✓ Pagado</button></div>
       </div>`;
     });
   }
@@ -1024,7 +601,7 @@ function renderResumen(c){
   for(let m=1;m<=12;m++){
     const d=calcMes(_resumenAnio,m);
     mesesData.push(d);
-    if(m<=numMeses){acumI+=V(d,'ingresos');acumG+=V(d,'gastos');acumN+=V(d,'neto');}
+    if(m<=numMeses){acumI+=d.ingresos;acumG+=d.gastos;acumN+=d.neto;}
   }
 
   // Filas de meses — compactas
@@ -1035,7 +612,7 @@ function renderResumen(c){
     const esActual=_resumenAnio===ANIO_ACTUAL&&m===MES_ACTUAL;
     const abierto=_mesDesplegado===m;
     const editando=_mesEditando===m;
-    const tieneOverride=getOverrideMes(_resumenAnio,m)!==null;
+    const tieneOverride=!!localStorage.getItem(`alq_mes_${_resumenAnio}_${m}`);
 
     let detalleHTML='';
     if(abierto&&!esFuturo){
@@ -1060,77 +637,21 @@ function renderResumen(c){
           // Cabecera propiedad
           propRows+=`<div style="margin-top:0.5rem;">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:0.25rem 0.4rem;background:#f3f4f6;border-radius:6px;margin-bottom:0.2rem;">
-              <span style="font-size:0.73rem;font-weight:700;color:#1a1a1a;">${p.nombre}${(_modoSocio&&p.numSocios>1)?' <span style="font-weight:600;color:#7c3aed;">÷'+p.numSocios+'</span>':''}</span>
-              <span style="font-size:0.72rem;font-weight:700;color:${p.neto>=0?'#065f46':'#991b1b'};">${(_modoSocio&&p.numSocios>1)?fmt(p.neto/p.numSocios)+'€ (mi parte)':fmt(p.neto)+'€ neto'}</span>
+              <span style="font-size:0.73rem;font-weight:700;color:#1a1a1a;">${p.nombre}</span>
+              <span style="font-size:0.72rem;font-weight:700;color:${p.neto>=0?'#065f46':'#991b1b'};">${fmt(p.neto)}€ neto</span>
             </div>
             <div style="padding:0 0.4rem;">
-              <div style="font-size:0.7rem;padding:0.1rem 0;color:#1e40af;">
-                <div style="display:flex;justify-content:space-between;align-items:center;">
-                  <span>💰 Ingreso alquiler</span>
-                  <div style="display:flex;align-items:center;gap:0.3rem;">
-                    <span style="font-weight:600;">+${fmt(p.ing)}€</span>
-                    <button onclick="event.stopPropagation();toggleEditGastoResumen('rr-${m}-${p.propId}')" style="background:none;border:none;cursor:pointer;font-size:0.75rem;padding:0;color:#9ca3af;" title="Editar renta de este mes">✏️</button>
-                  </div>
-                </div>
-                <div id="rr-${m}-${p.propId}" onclick="event.stopPropagation();" style="display:none;margin-top:0.2rem;background:#fff;border:1px solid #bfdbfe;border-radius:5px;padding:0.3rem 0.4rem;">
-                  <div style="display:flex;gap:0.3rem;align-items:center;">
-                    <input type="number" id="rr-inp-${m}-${p.propId}" value="${p.ing}" onclick="event.stopPropagation();" onfocus="event.stopPropagation();" style="width:80px;font-size:0.75rem;padding:0.2rem 0.3rem;border:1px solid #93c5fd;border-radius:4px;" placeholder="€ este mes"/>
-                    <button onclick="event.stopPropagation();guardarRentaMes(${_resumenAnio},${m},'${p.propId}')" style="background:#1e40af;color:white;border:none;border-radius:4px;padding:0.2rem 0.5rem;font-size:0.72rem;cursor:pointer;">✓</button>
-                    <button onclick="event.stopPropagation();resetRentaMes(${_resumenAnio},${m},'${p.propId}')" style="background:none;border:1px solid #d1d5db;border-radius:4px;color:#6b7280;cursor:pointer;font-size:0.72rem;padding:0.2rem 0.4rem;" title="Volver al valor por defecto">↩</button>
-                  </div>
-                  <div style="margin-top:0.35rem;padding-top:0.35rem;border-top:1px dashed #dbeafe;">
-                    <div style="font-size:0.66rem;color:#6b7280;margin-bottom:0.2rem;">🧮 Ajuste manual de prorrateo (opcional)</div>
-                    <div style="display:flex;gap:0.25rem;align-items:center;flex-wrap:wrap;">
-                      <input type="number" id="pr-alq-${m}-${p.propId}" onclick="event.stopPropagation();" oninput="calcularProrrateo(${m},'${p.propId}',${_resumenAnio})" style="width:62px;font-size:0.72rem;padding:0.2rem 0.3rem;border:1px solid #d1d5db;border-radius:4px;" placeholder="€ hab."/>
-                      <span style="font-size:0.68rem;color:#6b7280;">desde día</span>
-                      <input type="number" min="1" max="31" id="pr-dia-${m}-${p.propId}" onclick="event.stopPropagation();" oninput="calcularProrrateo(${m},'${p.propId}',${_resumenAnio})" style="width:44px;font-size:0.72rem;padding:0.2rem 0.3rem;border:1px solid #d1d5db;border-radius:4px;" placeholder="día"/>
-                      <span id="pr-res-${m}-${p.propId}" style="font-size:0.68rem;color:#065f46;font-weight:600;"></span>
-                      <button onclick="event.stopPropagation();aplicarProrrateo(${m},'${p.propId}')" style="background:#065f46;color:white;border:none;border-radius:4px;padding:0.2rem 0.4rem;font-size:0.68rem;cursor:pointer;">+ Sumar al total</button>
-                      <button onclick="event.stopPropagation();document.getElementById('rr-inp-${m}-${p.propId}').value=0;" style="background:none;border:1px solid #d1d5db;color:#6b7280;border-radius:4px;padding:0.2rem 0.4rem;font-size:0.68rem;cursor:pointer;" title="Pone el importe de arriba a 0 para ir sumando habitación por habitación">↺ Total a 0</button>
-                    </div>
-                    <div style="font-size:0.62rem;color:#9ca3af;margin-top:0.15rem;">El prorrateo por fecha de entrada de cada habitación ya se calcula solo. Usa esto solo para ajustes puntuales (impagos, salidas a mitad de mes, etc.).</div>
-                  </div>
-                </div>
-                ${(p.ingLista&&p.ingLista.length>1||(p.ingLista&&p.ingLista.some(u=>u.nota)))?`
-                <div style="margin-top:0.15rem;margin-left:0.6rem;padding-left:0.4rem;border-left:2px solid #dbeafe;">
-                  ${p.ingLista.map(u=>`
-                    <div style="display:flex;justify-content:space-between;font-size:0.66rem;color:#64748b;padding:0.05rem 0;">
-                      <span>${u.nombre}${u.nota?' <span style="color:#7c3aed;">('+u.nota+')</span>':''}</span>
-                      <span style="font-weight:600;color:#1e40af;">+${fmt(u.importe)}€${u.nota?' <span style="color:#9ca3af;font-weight:400;">de '+fmt(u.base)+'</span>':''}</span>
-                    </div>`).join('')}
-                </div>`:''}
+              <div style="display:flex;justify-content:space-between;font-size:0.7rem;padding:0.1rem 0;color:#1e40af;">
+                <span>💰 Ingreso alquiler</span><span style="font-weight:600;">+${fmt(p.ing)}€</span>
               </div>
               ${p.gasLista.map(g=>`
-              <div style="font-size:0.7rem;padding:0.1rem 0;color:#991b1b;">
-                <div style="display:flex;justify-content:space-between;align-items:center;">
-                  <span>📌 ${g.concepto}</span>
-                  <div style="display:flex;align-items:center;gap:0.3rem;">
-                    <span>-${fmt(g.importe)}€</span>
-                    <button onclick="event.stopPropagation();toggleEditGastoResumen('rg-${m}-${p.propId}-${g.id}')" style="background:none;border:none;cursor:pointer;font-size:0.75rem;padding:0;color:#9ca3af;" title="Editar">✏️</button>
-                  </div>
-                </div>
-                <div id="rg-${m}-${p.propId}-${g.id}" style="display:none;margin-top:0.2rem;background:#fff;border:1px solid #e5e7eb;border-radius:5px;padding:0.3rem 0.4rem;">
-                  <div style="display:flex;gap:0.3rem;align-items:center;">
-                    <input type="number" id="rg-inp-${m}-${p.propId}-${g.id}" value="${g.importe}" style="width:70px;font-size:0.75rem;padding:0.2rem 0.3rem;border:1px solid #d1d5db;border-radius:4px;" placeholder="€/mes"/>
-                    <button onclick="event.stopPropagation();guardarGastoResumen(${_resumenAnio},${m},'${p.propId}','${g.id}')" style="background:#065f46;color:white;border:none;border-radius:4px;padding:0.2rem 0.5rem;font-size:0.72rem;cursor:pointer;">✓</button>
-                    <button onclick="event.stopPropagation();document.getElementById('rg-${m}-${p.propId}-${g.id}').style.display='none'" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:0.8rem;">✕</button>
-                  </div>
-                </div>
+              <div style="display:flex;justify-content:space-between;font-size:0.7rem;padding:0.1rem 0;color:#991b1b;">
+                <span>📌 ${g.concepto}</span><span>-${fmt(g.importe)}€</span>
               </div>`).join('')}
             </div>
           </div>`;
         });
         detalleHTML=`<div style="margin-top:0.5rem;padding-top:0.5rem;border-top:1px solid #e5e7eb;">
-          ${(()=>{
-            if(!tieneOverride) return '';
-            const realIng=detalle.reduce((a,x)=>a+V2(x,'ing'),0);
-            const realGas=detalle.reduce((a,x)=>a+V2(x,'gas'),0);
-            const desajuste=Math.abs(realIng-d.ingresos)>1||Math.abs(realGas-d.gastos)>1;
-            if(!desajuste) return '';
-            return `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:0.5rem 0.7rem;margin-bottom:0.5rem;font-size:0.72rem;color:#92400e;">
-              ⚠️ Los totales de este mes están fijados a mano y no coinciden con el desglose real (${Math.round(realIng)}€ ingresos · ${Math.round(realGas)}€ gastos). Pulsa <strong>↩ Reset</strong> para recalcular con los gastos actuales.
-            </div>`;
-          })()}
           ${propRows}
           <div style="margin-top:0.5rem;padding-top:0.3rem;border-top:1px dashed #e5e7eb;display:flex;justify-content:flex-end;">
             <button onclick="event.stopPropagation();_mesEditando=${m};renderSection(currentSection)" style="background:none;border:1px solid #d1d5db;border-radius:6px;padding:0.2rem 0.5rem;font-size:0.7rem;cursor:pointer;color:#6b7280;">✏️ Modificar totales</button>
@@ -1145,9 +666,9 @@ function renderResumen(c){
         <div style="font-weight:600;font-size:0.8rem;color:${esActual?'#fff':'#1a1a1a'};width:72px;">${NOMBRES_MES[m-1].slice(0,3)}${tieneOverride?'*':''}${esActual?' ◂':''}</div>
         ${!esFuturo?`
           <div style="display:flex;gap:0.5rem;align-items:center;font-size:0.72rem;">
-            <span style="color:${esActual?'#86efac':'#1e40af'};">+${V(d,'ingresos')}</span>
-            <span style="color:${esActual?'#fca5a5':'#991b1b'};">-${V(d,'gastos')}</span>
-            <span style="font-weight:700;min-width:44px;text-align:right;color:${V(d,'neto')>=0?(esActual?'#4ade80':'#065f46'):'#ef4444'};">${V(d,'neto')}€</span>
+            <span style="color:${esActual?'#86efac':'#1e40af'};">+${fmt(d.ingresos)}</span>
+            <span style="color:${esActual?'#fca5a5':'#991b1b'};">-${fmt(d.gastos)}</span>
+            <span style="font-weight:700;min-width:44px;text-align:right;color:${d.neto>=0?(esActual?'#4ade80':'#065f46'):'#ef4444'};">${fmt(d.neto)}€</span>
           </div>
         `:`<span style="font-size:0.7rem;color:#bbb;">—</span>`}
       </div>
@@ -1162,21 +683,10 @@ function renderResumen(c){
       <div style="font-weight:700;font-size:1rem;">📅 ${_resumenAnio}</div>
       <button onclick="cambiarAnio(1)" style="background:#f3f4f6;border:none;border-radius:6px;padding:0.3rem 0.7rem;cursor:pointer;font-size:1rem;${_resumenAnio>=ANIO_ACTUAL?'opacity:0.3;cursor:default;':''}" ${_resumenAnio>=ANIO_ACTUAL?'disabled':''}>›</button>
     </div>
-
-    <div style="display:flex;justify-content:center;margin-bottom:0.6rem;">
-      <span style="background:#ede9fe;border:1px solid #c4b5fd;border-radius:20px;padding:0.35rem 0.9rem;font-size:0.75rem;font-weight:600;color:#5b21b6;">
-        👥 Mostrando: solo mi parte
-      </span>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.4rem;margin-bottom:0.4rem;">
-      <div style="background:#eff6ff;border-radius:8px;padding:0.5rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#6b7280;margin-bottom:0.1rem;">${_modoSocio?'Mi ingreso':'Cobrado'}</div><div style="font-size:0.9rem;font-weight:700;color:#1e40af;">${acumI}€</div></div>
-      <div style="background:#fef2f2;border-radius:8px;padding:0.5rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#6b7280;margin-bottom:0.1rem;">${_modoSocio?'Mis gastos':'Gastos'}</div><div style="font-size:0.9rem;font-weight:700;color:#991b1b;">${acumG}€</div></div>
-      <div style="background:${acumN>=0?'#f0fdf4':'#fef2f2'};border-radius:8px;padding:0.5rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#6b7280;margin-bottom:0.1rem;">${_modoSocio?'Mi neto':'Neto'}</div><div style="font-size:0.9rem;font-weight:700;color:${acumN>=0?'#065f46':'#991b1b'};">${acumN}€</div></div>
-    </div>
-    <div style="background:#faf5ff;border-radius:8px;padding:0.5rem 0.6rem;text-align:center;margin-bottom:0.7rem;">
-      <div style="font-size:0.65rem;color:#6b7280;margin-bottom:0.1rem;">Media mensual (${_resumenAnio===ANIO_ACTUAL?MES_ACTUAL:12} meses)</div>
-      <div style="font-size:0.9rem;font-weight:700;color:#7c3aed;">${Math.round(acumN/(_resumenAnio===ANIO_ACTUAL?MES_ACTUAL:12))}€/mes</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.4rem;margin-bottom:0.7rem;">
+      <div style="background:#eff6ff;border-radius:8px;padding:0.5rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#6b7280;margin-bottom:0.1rem;">Cobrado</div><div style="font-size:0.9rem;font-weight:700;color:#1e40af;">${fmt(acumI)}€</div></div>
+      <div style="background:#fef2f2;border-radius:8px;padding:0.5rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#6b7280;margin-bottom:0.1rem;">Gastos</div><div style="font-size:0.9rem;font-weight:700;color:#991b1b;">${fmt(acumG)}€</div></div>
+      <div style="background:${acumN>=0?'#f0fdf4':'#fef2f2'};border-radius:8px;padding:0.5rem 0.6rem;text-align:center;"><div style="font-size:0.65rem;color:#6b7280;margin-bottom:0.1rem;">Neto</div><div style="font-size:0.9rem;font-weight:700;color:${acumN>=0?'#065f46':'#991b1b'};">${fmt(acumN)}€</div></div>
     </div>
     ${mesesHTML}
     ${alertasHTML?'<hr class="divider" style="margin:0.6rem 0;"/>'+alertasHTML:''}
@@ -1198,7 +708,7 @@ function toggleSumResumen(propId,sId,e){
   e.stopPropagation();
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
   if(!s)return;
-  s.estado='Pagado';s.fechaPago=new Date().toISOString().slice(0,10);s.mesCobro=mesCorrespondiente();
+  s.estado='Pagado';s.fechaPago=new Date().toISOString().slice(0,10);
   saveData();
   const pill=document.getElementById('sp-'+propId+'-'+sId);
   if(pill){pill.className='estado-pill pill-ok';pill.style.cursor='default';pill.onclick=null;pill.textContent='✓ '+s.tipo+' día '+s.fechaPago.slice(8,10);}
@@ -1213,100 +723,28 @@ function toggleSumResumen(propId,sId,e){
 function marcarCobroPendiente(propId,habId,igId){
   const p=propiedades.find(x=>x.id===propId);
   const hoy=new Date().toISOString().slice(0,10);
-  const fecha=prompt('¿Qué día se realizó el pago? (AAAA-MM-DD)',hoy);
-  if(!fecha) return;
-  if(habId){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=true;h.fechaCobro=fecha;h.mesCobro=mesCorrespondiente();}}
-  else if(igId){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=true;ig.fechaCobro=fecha;ig.mesCobro=mesCorrespondiente();}}
+  if(habId){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=true;h.fechaCobro=hoy;}}
+  else if(igId){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=true;ig.fechaCobro=hoy;}}
   renderSection(currentSection);saveData();
 }
-function marcarCobroDesdeAlerta(propId,habId,igId,pill){
-  // Marcar como cobrado con la fecha de hoy, sin prompt
-  const p=propiedades.find(x=>x.id===propId);
-  if(!p) return;
-  const fecha=new Date().toISOString().slice(0,10);
-  if(habId&&habId!=='null'){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=true;h.fechaCobro=fecha;h.mesCobro=mesCorrespondiente();}}
-  else if(igId&&igId!=='null'){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=true;ig.fechaCobro=fecha;ig.mesCobro=mesCorrespondiente();}}
-  // Actualizar pill visualmente y ocultar la alerta
-  if(pill){
-    const box=pill.closest('.alert-box');
-    pill.className='estado-pill pill-ok';
-    pill.style.cursor='default';
-    pill.onclick=null;
-    const d=fecha.slice(8,10)+'/'+fecha.slice(5,7);
-    pill.textContent='✓ Cobrado el '+d;
-    if(box){setTimeout(()=>{box.style.transition='opacity 0.4s';box.style.opacity='0';setTimeout(()=>renderSection(currentSection),420);},600);}
-  }
-  saveData();
-}
-function toggleCobroRapido(propId,habId,igId){
-  const p=propiedades.find(x=>x.id===propId);
-  if(!p) return;
-  const fecha=new Date().toISOString().slice(0,10);
-  if(habId&&habId!=='null'){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=!h.cobrado;h.fechaCobro=h.cobrado?fecha:null;h.mesCobro=h.cobrado?mesCorrespondiente():null;}}
-  else if(igId&&igId!=='null'){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=!ig.cobrado;ig.fechaCobro=ig.cobrado?fecha:null;ig.mesCobro=ig.cobrado?mesCorrespondiente():null;}}
-  saveData();
-}
-function toggleEditSumAlerta(propId,sId){
-  const el=document.getElementById('sum-alert-edit-'+propId+'-'+sId);
-  if(el) el.style.display=el.style.display==='none'?'block':'none';
-}
-function guardarEditSumAlerta(propId,sId,tieneFechaPago){
-  const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  if(!s) return;
-  const titEl=document.getElementById('sum-alert-tit-'+propId+'-'+sId);
-  const perEl=document.getElementById('sum-alert-per-'+propId+'-'+sId);
-  if(titEl&&titEl.value.trim()) s.tipo=titEl.value.trim();
-  if(perEl&&perEl.value) s.periodoFecha=perEl.value;
-  if(tieneFechaPago){
-    const fpEl=document.getElementById('sum-alert-fp-'+propId+'-'+sId);
-    if(fpEl&&fpEl.value) s.fechaPago=fpEl.value;
-  }
-  saveData();renderSection(currentSection);
-}
 function marcarSumPagadoAlerta(propId,sId,btn){
-  const fecha=prompt('Fecha de pago (AAAA-MM-DD):',new Date().toISOString().slice(0,10));
-  if(!fecha) return;
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
   if(!s)return;
   const box=document.getElementById('sum-alert-'+propId+'-'+sId);
-  const periodo=mesConsumoSum(s);
   if(box){
     box.style.borderLeftColor='#10b981';box.style.background='#d1fae5';
-    const titleEl=box.querySelector('.alert-title')||box.querySelector('[id^="sum-alert-title"]');
-    if(titleEl) titleEl.textContent='✅ Pagado — '+s.tipo+' ('+p.nombre+')';
-    if(btn){btn.textContent='✓ Pagado';btn.style.background='#065f46';btn.style.color='#fff';btn.disabled=true;}
-    // Mostrar fecha de pago
-    const subEl=box.querySelector('.alert-sub');
-    if(subEl) subEl.innerHTML=subEl.innerHTML+'<br><span style="color:#065f46;font-weight:600;">✅ Pagado el '+fmtFechaPago(fecha)+'</span>';
+    box.querySelector('.alert-title').textContent='✅ Pagado — '+s.tipo+' ('+p.nombre+')';
+    btn.textContent='✓ Pagado';btn.style.background='#065f46';btn.style.color='#fff';btn.disabled=true;
   }
   const pill=document.getElementById('sp-'+propId+'-'+sId);
-  if(pill){pill.className='estado-pill pill-ok';pill.style.cursor='default';pill.onclick=null;pill.textContent='✓ '+s.tipo+' día '+fecha.slice(8,10);}
-  s.estado='Pagado';s.fechaPago=fecha;s.mesCobro=mesCorrespondiente();
+  if(pill){pill.className='estado-pill pill-ok';pill.style.cursor='default';pill.onclick=null;pill.textContent='✓ '+s.tipo+' día '+new Date().getDate();}
+  s.estado='Pagado';s.fechaPago=new Date().toISOString().slice(0,10);
   saveData();
   setTimeout(()=>renderSection(currentSection),900);
 }
-function marcarSumPagadoDesdeAlerta(propId,sId,pill){
-  const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  if(!s) return;
-  const fecha=new Date().toISOString().slice(0,10);
-  s.estado='Pagado'; s.fechaPago=fecha;s.mesCobro=mesCorrespondiente();
-  saveData();
-  if(pill){
-    const box=pill.closest('.alert-box');
-    pill.className='estado-pill pill-ok';
-    pill.style.cursor='default';
-    pill.onclick=null;
-    const d=fecha.slice(8,10)+'/'+fecha.slice(5,7);
-    pill.textContent='✓ Pagado el '+d;
-    // Actualizar también la pill de suministro pendiente en la tarjeta del piso
-    const spPill=document.getElementById('sp-'+propId+'-'+sId);
-    if(spPill){spPill.className='estado-pill pill-ok';spPill.style.cursor='default';spPill.onclick=null;spPill.textContent='✓ '+s.tipo+' día '+d.slice(0,2);}
-    if(box){setTimeout(()=>{box.style.transition='opacity 0.4s';box.style.opacity='0';setTimeout(()=>renderSection(currentSection),420);},600);}
-  }
-}
 function toggleSumDetalle(propId,sId){
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;s.mesCobro=s.estado==='Pagado'?mesCorrespondiente():null;}
+  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;}
   window._dTab='suministros';renderDetalle(document.getElementById('main-content'));saveData();
 }
 
@@ -1324,7 +762,7 @@ function renderDetalle(cont){
   const ca=calcProp(p),tab=window._dTab||'resumen',hoy=new Date();
   let inqList=[];
   if(p.tipo==='habitaciones')inqList=p.habitaciones.filter(h=>h.inquilino).map(h=>({...h,alquilerBase:h.alquiler,alquiler:importeConIPC(h.alquiler,h.entrada),hab:'Hab.'+h.num}));
-  else inqList=(p.ingresos||[]).filter(ig=>ig.inquilino).map(ig=>({inquilino:ig.inquilino,telefono:ig.telefono||'',email:ig.email||'',alquiler:importeConIPC(ig.importe,ig.entrada),alquilerBase:ig.importe,entrada:ig.entrada||ig.fechaCobro||'',finContrato:ig.finContrato||'',cobrado:ig.cobrado,fechaCobro:ig.fechaCobro||'',mesCobro:ig.mesCobro||'',hab:'Completo',id:ig.id}));
+  else inqList=(p.ingresos||[]).filter(ig=>ig.inquilino).map(ig=>({inquilino:ig.inquilino,telefono:ig.telefono||'',email:ig.email||'',alquiler:importeConIPC(ig.importe,ig.entrada),alquilerBase:ig.importe,entrada:ig.entrada||ig.fechaCobro||'',finContrato:ig.finContrato||'',cobrado:ig.cobrado,hab:'Completo',id:ig.id}));
 
   function ipcHTML(nombre,alquiler,entrada){
     if(!entrada||!alquiler)return'';
@@ -1354,7 +792,7 @@ function renderDetalle(cont){
   if(tab==='resumen'){
     const er=estadoRapido(p);const tiSoc=p.socios&&p.socios.length>0;
     const cobHTML=er.cobros.map(co=>`<span class="estado-pill ${co.ok?'pill-ok':'pill-pend'}">${co.ok?'✓':'⏰'} ${co.label}</span>`).join('');
-    const sumHTML=er.pendSum.map(s=>{const per=mesConsumoSum(s);return`<span class="estado-pill pill-warn" id="sp-${p.id}-${s.id}" style="cursor:pointer;" onclick="toggleSumResumen(${p.id},${s.id},event)">⏰ ${s.tipo} ${fmt(s.importe)}€ · ${per.label}</span>`;}).join('');
+    const sumHTML=er.pendSum.map(s=>`<span class="estado-pill pill-warn">⏰ ${s.tipo} ${fmt(s.importe)}€</span>`).join('');
     tabContent=`<div class="stats3" style="margin-bottom:0.8rem;">
         <div class="stat-box"><div class="stat-label">Ingresos</div><div class="stat-val blue">${fmt(ca.ingresos)}€</div></div>
         <div class="stat-box"><div class="stat-label">Gastos</div><div class="stat-val red">${fmt(ca.totalGastos)}€</div></div>
@@ -1374,78 +812,26 @@ function renderDetalle(cont){
         <div class="card-header">
           <div><div class="card-title">${inq.inquilino}</div><div class="card-subtitle">${inq.hab}</div></div>
           <div style="text-align:right;"><span class="badge badge-green">${fmt(inq.alquiler)}€/mes</span>${inq.alquilerBase&&inq.alquiler!==inq.alquilerBase?`<div style="font-size:0.65rem;color:#888;margin-top:0.1rem;">Base: ${fmt(inq.alquilerBase)}€ +IPC</div>`:''}<br>
-          <span class="badge badge-${inq.cobrado?'green':'orange'}" style="margin-top:0.2rem;cursor:pointer;" onclick="toggleCobro(${p.id},${p.tipo==='habitaciones'?inq.id:'null'},${p.tipo==='habitaciones'?'null':inq.id});window._dTab='inquilinos';renderDetalle(document.getElementById('main-content'))">${inq.cobrado?'✓ Cobrado ↩':'⏳ Pend. ✓'}</span><br>
-          <button class="btn btn-secondary btn-sm" style="margin-top:0.3rem;font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="${p.tipo==='habitaciones'?`editarHab(${p.id},${inq.id})`:`editarIngreso(${p.id},${inq.id})`}">✏️ Editar</button></div>
+          <span class="badge badge-${inq.cobrado?'green':'orange'}" style="margin-top:0.2rem;cursor:pointer;" onclick="toggleCobro(${p.id},${inq.num||'null'},${inq.id});window._dTab='inquilinos';renderDetalle(document.getElementById('main-content'))">${inq.cobrado?'✓ Cobrado ↩':'⏳ Pend. ✓'}</span><br>
+          <button class="btn btn-secondary btn-sm" style="margin-top:0.3rem;font-size:0.7rem;padding:0.2rem 0.5rem;" onclick="editarIngreso(${p.id},${inq.id})">✏️ Editar</button></div>
         </div>
         ${inq.telefono?`<div class="dr"><span class="lbl">📞</span><span class="val">${inq.telefono}</span></div>`:''}
         ${inq.email?`<div class="dr"><span class="lbl">✉️</span><span class="val">${inq.email}</span></div>`:''}
-        <div class="dr"><span class="lbl">📅 Entrada</span><span class="val">${inq.entrada||'—'}</span></div>
-        <div class="dr"><span class="lbl">🏁 Fin contrato</span><span class="val" style="color:${dias!==null&&dias<=60?'#9a3412':'inherit'}">${inq.finContrato?inq.finContrato+(dias!==null?' ('+dias+' días)':''):'—'}</span></div>
-        <div class="dr"><span class="lbl">💶 Último cobro</span><span class="val" style="color:${inq.cobrado?'#065f46':'#9a3412'}">${inq.cobrado?((fmtMesCobro(inq.mesCobro)||'cobrado')+(inq.fechaCobro?' · pagado el '+fmtDiaMes(inq.fechaCobro):'')):'pendiente'}</span></div>
+        ${inq.entrada?`<div class="dr"><span class="lbl">📅 Entrada</span><span class="val">${inq.entrada}</span></div>`:''}
+        ${inq.finContrato?`<div class="dr"><span class="lbl">🏁 Fin contrato</span><span class="val" style="color:${dias!==null&&dias<=60?'#9a3412':'inherit'}">${inq.finContrato}${dias!==null?' ('+dias+' días)':''}</span></div>`:''}
         ${ipcHTML(inq.inquilino,inq.alquilerBase||inq.alquiler,inq.entrada)}
       </div>`;
     }).join('');
-    tabContent+=(p.tipo==='habitaciones'
-      ?`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verHabitaciones(${p.id})">🛏️ Gestionar habitaciones</button>`
-      :`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verIngresos(${p.id})">+ ${p.tipo==='gestion'?'Editar ingreso de gestión':'Añadir inquilino'}</button>`);
+    tabContent+=(p.tipo==='completo'
+      ?`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verIngresos(${p.id})">+ Añadir inquilino</button>`
+      :`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verHabitaciones(${p.id})">🛏️ Gestionar habitaciones</button>`);
   }else if(tab==='gastos'){
     const gastos=p.gastos||[];
-    tabContent=(gastos.length?`<div class="card">${gastos.map(g=>`<div class="list-item"><div><div class="li-title">${g.concepto}</div><div class="li-sub">${g.categoria}${g.recurrente?' · 🔁 Recurrente':' · Puntual'}${g.tipoAnual?' · ÷12':''}${gastoInicioLabel(g)?' · '+gastoInicioLabel(g):''}</div></div><div style="display:flex;align-items:center;gap:0.4rem;"><span style="font-weight:700;color:#991b1b;">${fmt(g.importe)}€</span><button onclick="borrarGasto(${p.id},${g.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem;">✕</button></div></div>`).join('')}</div>`:'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin gastos</p>');
+    tabContent=(gastos.length?`<div class="card">${gastos.map(g=>`<div class="list-item"><div><div class="li-title">${g.concepto}</div><div class="li-sub">${g.categoria}${g.recurrente?' · Recurrente':''}${g.tipoAnual?' · ÷12':''}</div></div><div style="display:flex;align-items:center;gap:0.4rem;"><span style="font-weight:700;color:#991b1b;">${fmt(g.importe)}€</span><button onclick="borrarGasto(${p.id},${g.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem;">✕</button></div></div>`).join('')}</div>`:'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin gastos</p>');
     tabContent+=`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verGastos(${p.id})">+ Añadir gasto</button>`;
   }else if(tab==='suministros'){
     const sums=p.suministros||[];
-    if(!sums.length){
-      tabContent='<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin suministros</p>';
-    } else {
-      tabContent=`<div class="card">${sums.map(s=>{
-        const per=mesConsumoSum(s);
-        const pagado=s.estado==='Pagado';
-        return`<div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.3rem;">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <div>
-              <div class="li-title">${s.tipo}</div>
-              <div class="li-sub" style="display:flex;flex-wrap:wrap;gap:0.3rem;align-items:center;">
-                <span>${s.pagador}</span>
-                <span style="background:#ede9fe;color:#5b21b6;border-radius:10px;padding:0.1rem 0.4rem;font-size:0.68rem;font-weight:600;">📅 ${per.label}</span>
-              </div>
-            </div>
-            <div style="display:flex;align-items:center;gap:0.4rem;">
-              <span class="badge badge-${pagado?'green':'orange'}" style="cursor:pointer;" onclick="toggleSumDetalle(${p.id},${s.id})">${pagado?'✓ Pagado ↩':'⏳ Pend. ✓'}</span>
-              <span style="font-weight:700;">${fmt(s.importe)}€</span>
-              <button onclick="toggleEditSumDetalle(${p.id},${s.id})" style="background:none;border:none;cursor:pointer;font-size:0.85rem;color:#6b7280;" title="Editar">✏️</button>
-            </div>
-          </div>
-          ${pagado?`<div style="font-size:0.72rem;color:#065f46;background:#f0fdf4;border-radius:6px;padding:0.2rem 0.5rem;display:flex;justify-content:space-between;align-items:center;">
-            <span>✅ ${fmtMesCobro(s.mesCobro)?fmtMesCobro(s.mesCobro)+' · pagado el ':'Pagado el '}${s.fechaPago?fmtFechaPago(s.fechaPago):'—'}</span>
-          </div>`:''}
-          <div id="edit-sum-det-${s.id}" style="display:none;background:#f8fafc;border-radius:8px;padding:0.5rem;border:1px solid #e5e7eb;">
-            <div style="font-size:0.72rem;font-weight:700;color:#888;margin-bottom:0.4rem;">Editar suministro</div>
-            <div style="display:flex;flex-direction:column;gap:0.3rem;">
-              <div style="display:flex;gap:0.3rem;align-items:center;">
-                <span style="font-size:0.72rem;color:#666;min-width:48px;">Título</span>
-                <input id="esd-tit-${s.id}" type="text" value="${s.tipo}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
-              </div>
-              <div style="display:flex;gap:0.3rem;align-items:center;">
-                <span style="font-size:0.72rem;color:#666;min-width:48px;">Período</span>
-                <input id="esd-per-${s.id}" type="month" value="${s.periodoFecha||(ANIO_ACTUAL+'-'+(MES_ACTUAL-1===0?'12':String(MES_ACTUAL-1).padStart(2,'0')))}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
-              </div>
-              ${pagado?`<div style="display:flex;gap:0.3rem;align-items:center;">
-                <span style="font-size:0.72rem;color:#666;min-width:48px;">F.pago</span>
-                <input id="esd-fp-${s.id}" type="date" value="${s.fechaPago||new Date().toISOString().slice(0,10)}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
-              </div>`:`<div style="display:flex;gap:0.3rem;align-items:center;">
-                <span style="font-size:0.72rem;color:#666;min-width:48px;">F.pago</span>
-                <input id="esd-fp-${s.id}" type="date" value="${new Date().toISOString().slice(0,10)}" placeholder="Al marcar pagado" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
-              </div>`}
-              <div style="display:flex;gap:0.3rem;margin-top:0.2rem;">
-                <button onclick="guardarEditSumDetalle(${p.id},${s.id})" style="background:#1a1a1a;color:white;border:none;border-radius:5px;padding:0.3rem 0.6rem;font-size:0.77rem;cursor:pointer;flex:1;">✓ Guardar</button>
-                <button onclick="document.getElementById('edit-sum-det-${s.id}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:5px;color:#6b7280;cursor:pointer;font-size:0.77rem;padding:0.3rem 0.5rem;">✕</button>
-                <button onclick="borrarSum(${p.id},${s.id})" style="background:#fee2e2;color:#991b1b;border:none;border-radius:5px;padding:0.3rem 0.5rem;font-size:0.77rem;cursor:pointer;">🗑️</button>
-              </div>
-            </div>
-          </div>
-        </div>`;
-      }).join('')}</div>`;
-    }
+    tabContent=(sums.length?`<div class="card">${sums.map(s=>`<div class="list-item"><div><div class="li-title">${s.tipo} · ${s.periodo||''}</div><div class="li-sub">${s.pagador}${s.fechaPago?' · pagado el '+s.fechaPago.slice(8,10):''}</div></div><div style="display:flex;align-items:center;gap:0.4rem;"><span class="badge badge-${s.estado==='Pagado'?'green':'orange'}" style="cursor:pointer;" onclick="toggleSumDetalle(${p.id},${s.id})">${s.estado==='Pagado'?'✓ Pagado ↩':'⏳ Pend. ✓'}</span><span style="font-weight:700;">${fmt(s.importe)}€</span></div></div>`).join('')}</div>`:'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin suministros</p>');
     tabContent+=`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verSuministrosProp(${p.id})">+ Añadir suministro</button>`;
   }else if(tab==='contrato'){
     const ct=p.contratoPDF;
@@ -1461,9 +847,6 @@ function renderDetalle(cont){
       </label></div>`;
   }
 
-  if(tab==='seguros') tabContent=renderSegurosTab(p);
-  if(tab==='documentos') tabContent=renderDocumentosTab(p);
-
   cont.innerHTML=`
     <button class="detail-back" onclick="navigate('propiedades')">← Propiedades</button>
     <div class="card" style="margin-bottom:0.8rem;">
@@ -1478,8 +861,6 @@ function renderDetalle(cont){
       <button class="tab-btn ${tab==='gastos'?'active':''}" onclick="window._dTab='gastos';renderDetalle(document.getElementById('main-content'))">💸 Gastos</button>
       <button class="tab-btn ${tab==='suministros'?'active':''}" onclick="window._dTab='suministros';renderDetalle(document.getElementById('main-content'))">💡 Sumin.</button>
       <button class="tab-btn ${tab==='contrato'?'active':''}" onclick="window._dTab='contrato';renderDetalle(document.getElementById('main-content'))">📄 Contrato</button>
-      <button class="tab-btn ${tab==='seguros'?'active':''}" onclick="window._dTab='seguros';renderDetalle(document.getElementById('main-content'))">🛡️ Seguros</button>
-      <button class="tab-btn ${tab==='documentos'?'active':''}" onclick="window._dTab='documentos';renderDetalle(document.getElementById('main-content'))">📋 Docs</button>
     </div>
     ${tabContent}`;
 }
@@ -1501,22 +882,14 @@ function renderPropiedades(c){
   c.innerHTML=propiedades.map(p=>{
     const ca=calcProp(p),habOc=p.tipo==='habitaciones'?p.habitaciones.filter(h=>h.inquilino).length:0,tiSoc=p.socios&&p.socios.length>0;
     const er=estadoRapido(p);
-    const cobrosHTML=er.cobros.map((co,ci)=>{
-      // Buscar el id del ingreso/hab para poder togglear
-      let clickFn='';
-      if(p.tipo==='habitaciones'){const h=p.habitaciones.filter(h=>h.inquilino)[ci];if(h)clickFn=`onclick="event.stopPropagation();toggleCobroRapido(${p.id},${h.id},'null');renderSection(currentSection)"`;
-      }else{const ig=(p.ingresos||[]).filter(ig=>ig.importe>0)[ci];if(ig)clickFn=`onclick="event.stopPropagation();toggleCobroRapido(${p.id},'null',${ig.id});renderSection(currentSection)"`;}
-      const fechaLabel=co.ok&&co.fechaCobro?` · ${co.fechaCobro.slice(8,10)}/${co.fechaCobro.slice(5,7)}`:'';
-      return`<span class="estado-pill ${co.ok?'pill-ok':'pill-pend'}" style="cursor:pointer;" ${clickFn}>${co.ok?'✓':'⏳'} ${co.label}${fechaLabel}</span>`;
-    }).join('');
-    const sumHTML=er.pendSum.map(s=>{const per=mesConsumoSum(s);return`<span class="estado-pill pill-warn">💡 ${s.tipo} · ${per.label}</span>`;}).join('');
+    const cobrosHTML=er.cobros.map(co=>`<span class="estado-pill ${co.ok?'pill-ok':'pill-pend'}">${co.ok?'✓':'⏳'} ${co.label}</span>`).join('');
+    const sumHTML=er.pendSum.map(s=>`<span class="estado-pill pill-warn">💡 ${s.tipo}</span>`).join('');
     return`<div class="card" style="cursor:pointer" onclick="abrirDetalle(${p.id})">
       <div class="card-header">
         <div style="flex:1;"><div class="card-title">${p.nombre}</div><div class="card-subtitle">${p.direccion}</div></div>
         <div style="display:flex;flex-direction:column;gap:0.25rem;align-items:flex-end;">
           <span class="badge badge-${p.estado==='ocupado'?'green':p.estado==='libre'?'orange':'gray'}">${p.estado==='ocupado'?'Ocupado':p.estado==='libre'?'Libre':'Reforma'}</span>
           ${tiSoc?`<span class="badge badge-purple">÷${ca.numSocios}</span>`:''}
-          ${p.tipo==='gestion'?`<span class="badge badge-purple">🤝 Gestión</span>`:''}
         </div>
       </div>
       <div class="dr"><span class="lbl">Ingresos</span><span class="val" style="color:#1e40af;">${fmt(ca.ingresos)}€/mes</span></div>
@@ -1552,22 +925,13 @@ function abrirModalProp(propId){
     <div class="field"><label>Tipo</label><select id="m-tipo" onchange="onTipoChange()">
       <option value="completo" ${p&&p.tipo==='completo'?'selected':''}>Piso completo</option>
       <option value="habitaciones" ${p&&p.tipo==='habitaciones'?'selected':''}>Por habitaciones</option>
-      <option value="gestion" ${p&&p.tipo==='gestion'?'selected':''}>Gestión (ingreso fijo, piso ajeno)</option>
     </select></div>
     <div class="field" id="m-numhab-wrap" style="display:${p&&p.tipo==='habitaciones'?'block':'none'}">
       <label>Número de habitaciones</label><input id="m-numhab" type="number" min="1" max="20" value="${p?p.numHabitaciones:2}"/>
     </div>
     <div class="field"><label>Dirección</label><input id="m-dir" value="${p?p.direccion:''}" placeholder="Calle y número..."/></div>
     <div class="field" id="m-alq-wrap" style="display:${p&&p.tipo==='habitaciones'?'none':'block'}">
-      <label id="m-alq-label">${p&&p.tipo==='gestion'?'Ingreso mensual de gestión (neto €)':'Alquiler mensual (€)'}</label><input id="m-alq" type="number" value="${p&&p.ingresos&&p.ingresos[0]?p.ingresos[0].importe:''}" placeholder="0"/>
-    </div>
-    <div class="field">
-      <label>Empieza a contar desde (opcional)</label>
-      <div style="display:flex;gap:0.4rem;">
-        <select id="m-ini-mes" style="flex:1;"><option value="">— mes —</option>${NOMBRES_MES.map((nm,i)=>`<option value="${i+1}" ${p&&p.inicioIngresos&&p.inicioIngresos.mes===i+1?'selected':''}>${nm}</option>`).join('')}</select>
-        <input id="m-ini-anio" type="number" min="2020" max="2100" placeholder="año" value="${p&&p.inicioIngresos?p.inicioIngresos.anio:''}" style="width:90px;"/>
-      </div>
-      <div style="font-size:0.68rem;color:#9ca3af;margin-top:0.2rem;">Déjalo vacío si cuenta desde siempre. Úsalo si el piso empezó a generar ingresos más tarde (ej. recién alquilado).</div>
+      <label>Alquiler mensual (€)</label><input id="m-alq" type="number" value="${p&&p.ingresos&&p.ingresos[0]?p.ingresos[0].importe:''}" placeholder="0"/>
     </div>
     <div class="field"><label>Estado</label><select id="m-estado">
       <option value="ocupado" ${p&&p.estado==='ocupado'?'selected':''}>Ocupado</option>
@@ -1588,38 +952,31 @@ function onTipoChange(){
   const t=document.getElementById('m-tipo').value;
   document.getElementById('m-numhab-wrap').style.display=t==='habitaciones'?'block':'none';
   document.getElementById('m-alq-wrap').style.display=t==='habitaciones'?'none':'block';
-  const lbl=document.getElementById('m-alq-label');
-  if(lbl)lbl.textContent=t==='gestion'?'Ingreso mensual de gestión (neto €)':'Alquiler mensual (€)';
 }
 function guardarProp(propId){
   const nombre=document.getElementById('m-nombre').value.trim();
   if(!nombre){alert('El nombre es obligatorio');return;}
   const tipo=document.getElementById('m-tipo').value,dir=document.getElementById('m-dir').value.trim(),estado=document.getElementById('m-estado').value;
   const numHab=tipo==='habitaciones'?parseInt(document.getElementById('m-numhab').value)||1:0;
-  const alq=(tipo==='completo'||tipo==='gestion')?parseFloat(document.getElementById('m-alq').value)||0:0;
+  const alq=tipo==='completo'?parseFloat(document.getElementById('m-alq').value)||0:0;
   const socios=[];
   document.querySelectorAll('#socios-list .socio-row').forEach(row=>{const inp=row.querySelector('input');if(inp&&inp.value.trim())socios.push(inp.value.trim());});
-  const iniMes=parseInt(document.getElementById('m-ini-mes').value)||0;
-  const iniAnio=parseInt(document.getElementById('m-ini-anio').value)||0;
-  const inicioIngresos=(iniMes&&iniAnio)?{anio:iniAnio,mes:iniMes}:null;
   if(propId){
     const p=propiedades.find(x=>x.id===propId);if(!p)return;
     p.nombre=nombre;p.tipo=tipo;p.direccion=dir;p.estado=estado;p.socios=socios;
-    if(inicioIngresos)p.inicioIngresos=inicioIngresos; else delete p.inicioIngresos;
     if(tipo==='habitaciones'){
       p.numHabitaciones=numHab;
       while(p.habitaciones.length<numHab)p.habitaciones.push({id:nextId++,num:p.habitaciones.length+1,inquilino:'',telefono:'',email:'',alquiler:0,entrada:'',finContrato:'',fianza:0,notas:'',cobrado:false});
       if(p.habitaciones.length>numHab)p.habitaciones=p.habitaciones.slice(0,numHab);
     }
-    if((tipo==='completo'||tipo==='gestion')&&alq){
-      if(!p.ingresos||!p.ingresos.length)p.ingresos=[{id:nextId++,concepto:tipo==='gestion'?'Gestión':'Alquiler',importe:alq,mes:MES_ACTUAL,anio:ANIO_ACTUAL,cobrado:false,inquilino:'',finContrato:'',entrada:''}];
+    if(tipo==='completo'&&alq){
+      if(!p.ingresos||!p.ingresos.length)p.ingresos=[{id:nextId++,concepto:'Alquiler',importe:alq,mes:MES_ACTUAL,anio:ANIO_ACTUAL,cobrado:false,inquilino:'',finContrato:'',entrada:''}];
       else p.ingresos[0].importe=alq;
     }
   }else{
     const np={id:nextId++,nombre,tipo,direccion:dir,estado,numHabitaciones:numHab,socios,habitaciones:[],gastos:[],ingresos:[],suministros:[]};
-    if(inicioIngresos)np.inicioIngresos=inicioIngresos;
     if(tipo==='habitaciones')for(let i=0;i<numHab;i++)np.habitaciones.push({id:nextId++,num:i+1,inquilino:'',telefono:'',email:'',alquiler:0,entrada:'',finContrato:'',fianza:0,notas:'',cobrado:false});
-    else if(alq)np.ingresos.push({id:nextId++,concepto:tipo==='gestion'?'Gestión':'Alquiler',importe:alq,mes:MES_ACTUAL,anio:ANIO_ACTUAL,cobrado:false,inquilino:'',finContrato:'',entrada:''});
+    else if(alq)np.ingresos.push({id:nextId++,concepto:'Alquiler',importe:alq,mes:MES_ACTUAL,anio:ANIO_ACTUAL,cobrado:false,inquilino:'',finContrato:'',entrada:''});
     propiedades.push(np);
   }
   closeModal();renderSection(currentSection);saveData();
@@ -1643,7 +1000,7 @@ function verHabitaciones(propId){
     <div class="hab-grid">
       ${p.habitaciones.map(h=>`
         <div class="hab-card ${h.inquilino?'ocupada':'libre'}" onclick="editarHab(${propId},${h.id})">
-          <div class="hab-num">${h.nombre||('Habitación '+h.num)}</div>
+          <div class="hab-num">Habitación ${h.num}</div>
           <div class="hab-name">${h.inquilino||'Libre'}</div>
           <div class="hab-rent">${h.inquilino?fmt(h.alquiler)+'€/mes':'—'}</div>
           ${h.inquilino?`<div style="font-size:0.68rem;margin-top:0.2rem;"><span style="background:${h.cobrado?'#d1fae5':'#ffedd5'};color:${h.cobrado?'#065f46':'#9a3412'};padding:0.1rem 0.4rem;border-radius:8px;font-weight:600;">${h.cobrado?'✓ Cobrado':'⏳ Pendiente'}</span></div>`:''}
@@ -1659,7 +1016,6 @@ function editarHab(propId,habId){
   showModal(`
     <button class="modal-close" onclick="verHabitaciones(${propId})">✕</button>
     <div class="modal-title">Habitación ${h.num} — ${p.nombre}</div>
-    <div class="field"><label>Nombre habitación</label><input id="h-nombre" value="${h.nombre||('Habitación '+h.num)}" placeholder="Ej: Hab. principal"/></div>
     <div class="field"><label>Inquilino</label><input id="h-inq" value="${h.inquilino}" placeholder="Nombre (vacío = libre)"/></div>
     <div class="field-row">
       <div class="field"><label>Teléfono</label><input id="h-tel" value="${h.telefono}"/></div>
@@ -1671,15 +1027,9 @@ function editarHab(propId,habId){
       <div class="field"><label>Fin contrato</label><input id="h-fin" type="date" value="${h.finContrato}"/></div>
     </div>
     <div class="field"><label>Fianza (€)</label><input id="h-fianza" type="number" value="${h.fianza}"/></div>
-    <div class="field" style="background:#f0fdf4;border-radius:8px;padding:0.6rem 0.8rem;">
-      <div style="display:flex;align-items:center;gap:0.5rem;">
-        <input id="h-cobrado" type="checkbox" style="width:16px;height:16px;margin:0;" ${h.cobrado?'checked':''} onchange="document.getElementById('h-fecha-wrap').style.display=this.checked?'block':'none'"/>
-        <label for="h-cobrado" style="margin:0;font-size:0.85rem;font-weight:500;">✅ Cobrado este mes</label>
-      </div>
-      <div id="h-fecha-wrap" style="display:${h.cobrado?'block':'none'};margin-top:0.4rem;">
-        <label style="font-size:0.75rem;color:#6b7280;">Fecha de cobro</label>
-        <input id="h-fechacobro" type="date" value="${h.fechaCobro||new Date().toISOString().slice(0,10)}"/>
-      </div>
+    <div class="field" style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
+      <input id="h-cobrado" type="checkbox" style="width:auto;margin:0;" ${h.cobrado?'checked':''}/>
+      <label for="h-cobrado" style="margin:0;font-size:0.85rem;">Alquiler cobrado este mes</label>
     </div>
     <div class="field"><label>Notas</label><textarea id="h-notas" rows="2">${h.notas}</textarea></div>
     <div class="modal-actions">
@@ -1690,7 +1040,6 @@ function editarHab(propId,habId){
 }
 function guardarHab(propId,habId){
   const p=propiedades.find(x=>x.id===propId),h=p.habitaciones.find(x=>x.id===habId);
-  h.nombre=document.getElementById('h-nombre').value.trim()||('Habitación '+h.num);
   h.inquilino=document.getElementById('h-inq').value.trim();
   h.telefono=document.getElementById('h-tel').value.trim();
   h.email=document.getElementById('h-email').value.trim();
@@ -1698,9 +1047,10 @@ function guardarHab(propId,habId){
   h.entrada=document.getElementById('h-entrada').value;
   h.finContrato=document.getElementById('h-fin').value;
   h.fianza=parseFloat(document.getElementById('h-fianza').value)||0;
+  const cobradoAntes=h.cobrado;
   h.cobrado=document.getElementById('h-cobrado').checked;
-  if(h.cobrado){h.fechaCobro=document.getElementById('h-fechacobro').value||new Date().toISOString().slice(0,10);if(!h.mesCobro)h.mesCobro=mesCorrespondiente();}
-  else{h.fechaCobro=null;h.mesCobro=null;}
+  if(h.cobrado&&!cobradoAntes)h.fechaCobro=new Date().toISOString().slice(0,10);
+  else if(!h.cobrado)h.fechaCobro=null;
   h.notas=document.getElementById('h-notas').value;
   saveData();verHabitaciones(propId);
 }
@@ -1749,25 +1099,9 @@ function verIngresos(propId){
 }
 function toggleCobro(propId,habId,igId){
   const p=propiedades.find(x=>x.id===propId);
-  if(habId){
-    const h=p.habitaciones.find(x=>x.id===habId);
-    if(h){
-      if(!h.cobrado){
-        const f=prompt('¿Qué día se realizó el pago? (AAAA-MM-DD)',new Date().toISOString().slice(0,10));
-        if(!f) return;
-        h.cobrado=true;h.fechaCobro=f;h.mesCobro=mesCorrespondiente();
-      } else {h.cobrado=false;h.fechaCobro=null;h.mesCobro=null;}
-    }
-  } else if(igId){
-    const ig=(p.ingresos||[]).find(x=>x.id===igId);
-    if(ig){
-      if(!ig.cobrado){
-        const f=prompt('¿Qué día se realizó el pago? (AAAA-MM-DD)',new Date().toISOString().slice(0,10));
-        if(!f) return;
-        ig.cobrado=true;ig.fechaCobro=f;ig.mesCobro=mesCorrespondiente();
-      } else {ig.cobrado=false;ig.fechaCobro=null;ig.mesCobro=null;}
-    }
-  }
+  const hoy=new Date().toISOString().slice(0,10);
+  if(habId){const h=p.habitaciones.find(x=>x.id===habId);if(h){h.cobrado=!h.cobrado;h.fechaCobro=h.cobrado?hoy:null;}}
+  else if(igId){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig){ig.cobrado=!ig.cobrado;ig.fechaCobro=ig.cobrado?hoy:null;}}
   saveData();
   if(currentSection==='detalle'){window._dTab='inquilinos';renderDetalle(document.getElementById('main-content'));}
   else verIngresos(propId);
@@ -1787,15 +1121,9 @@ function editarIngreso(propId,igId){
       <div class="field"><label>Fecha entrada</label><input id="ei-entrada" type="date" value="${ig.entrada||''}"/></div>
       <div class="field"><label>Fin contrato</label><input id="ei-fin" type="date" value="${ig.finContrato||''}"/></div>
     </div>
-    <div class="field" style="background:#f0fdf4;border-radius:8px;padding:0.6rem 0.8rem;">
-      <div style="display:flex;align-items:center;gap:0.5rem;">
-        <input id="ei-cobrado" type="checkbox" style="width:16px;height:16px;margin:0;" ${ig.cobrado?'checked':''} onchange="document.getElementById('ei-fecha-wrap').style.display=this.checked?'block':'none'"/>
-        <label for="ei-cobrado" style="margin:0;font-size:0.85rem;font-weight:500;">✅ Cobrado este mes</label>
-      </div>
-      <div id="ei-fecha-wrap" style="display:${ig.cobrado?'block':'none'};margin-top:0.4rem;">
-        <label style="font-size:0.75rem;color:#6b7280;">Fecha de cobro</label>
-        <input id="ei-fechacobro" type="date" value="${ig.fechaCobro||new Date().toISOString().slice(0,10)}"/>
-      </div>
+    <div class="field" style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
+      <input id="ei-cobrado" type="checkbox" style="width:auto;margin:0;" ${ig.cobrado?'checked':''}/>
+      <label for="ei-cobrado" style="margin:0;font-size:0.85rem;">Cobrado este mes</label>
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
@@ -1814,8 +1142,6 @@ function guardarEdicionIngreso(propId,igId){
   ig.entrada=document.getElementById('ei-entrada').value;
   ig.finContrato=document.getElementById('ei-fin').value;
   ig.cobrado=document.getElementById('ei-cobrado').checked;
-  if(ig.cobrado){ig.fechaCobro=document.getElementById('ei-fechacobro').value||new Date().toISOString().slice(0,10);if(!ig.mesCobro)ig.mesCobro=mesCorrespondiente();}
-  else{ig.fechaCobro=null;ig.mesCobro=null;}
   saveData();closeModal();
   if(currentSection==='detalle'){window._dTab='inquilinos';renderDetalle(document.getElementById('main-content'));}
 }
@@ -1838,31 +1164,15 @@ function verGastos(propId){
     ${total>0?`<div style="font-size:0.8rem;color:#888;margin-bottom:0.7rem;">Total mes: <strong style="color:#991b1b;">${fmt(total)}€</strong></div>`:''}
     ${!(p.gastos&&p.gastos.length)?'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin gastos</p>':''}
     ${(p.gastos||[]).map(g=>`
-      <div class="list-item" id="gasto-row-${g.id}">
-        <div style="flex:1;">
+      <div class="list-item">
+        <div>
           <div class="li-title">${g.concepto}</div>
-          <div class="li-sub">${g.categoria}${g.tipoAnual?' · Anual ÷12 = '+fmt(g.importe)+'€/mes':' · '+fmt(g.importe)+'€'}${g.recurrente?' · 🔁 Recurrente':' · Puntual'}${gastoInicioLabel(g)?' · '+gastoInicioLabel(g):''}</div>
+          <div class="li-sub">${g.categoria}${g.tipoAnual?' · Anual ÷12 = '+fmt(g.importe)+'€/mes':' · '+fmt(g.importe)+'€'}${g.recurrente?' · Recurrente':''}</div>
         </div>
-        <div style="display:flex;align-items:center;gap:0.4rem;">
+        <div style="display:flex;align-items:center;gap:0.5rem;">
           ${g.tipoAnual?`<span class="badge badge-blue">${fmt(g.importeAnual||g.importe*12)}€/año</span>`:''}
           <span style="font-weight:700;color:#991b1b;">${fmt(g.importe)}€/mes</span>
-          <button onclick="editarGasto(${propId},${g.id})" style="background:none;border:none;cursor:pointer;font-size:0.9rem;" title="Editar">✏️</button>
           <button onclick="borrarGasto(${propId},${g.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;">✕</button>
-        </div>
-      </div>
-      <div id="gasto-edit-${g.id}" style="display:none;background:#f8fafc;border-radius:8px;padding:0.6rem 0.8rem;margin-bottom:0.4rem;">
-        <div class="field-row">
-          <div class="field"><label style="font-size:0.72rem;">Concepto</label><input id="ge-con-${g.id}" value="${g.concepto}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
-          <div class="field"><label style="font-size:0.72rem;">Importe €/mes</label><input id="ge-imp-${g.id}" type="number" value="${g.tipoAnual?(g.importeAnual||g.importe*12):g.importe}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
-        </div>
-        <div class="field-row">
-          <div class="field"><label style="font-size:0.72rem;">Mes inicio</label><input id="ge-mes-${g.id}" type="number" min="1" max="12" value="${g.mes||MES_ACTUAL}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
-          <div class="field"><label style="font-size:0.72rem;">Año</label><input id="ge-anio-${g.id}" type="number" value="${g.anio||ANIO_ACTUAL}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
-          <div class="field" style="display:flex;align-items:flex-end;padding-bottom:0.35rem;"><label style="display:flex;align-items:center;gap:0.4rem;margin:0;font-size:0.78rem;"><input id="ge-rec-${g.id}" type="checkbox" ${g.recurrente?'checked':''} style="width:auto;margin:0;"/> Recurrente</label></div>
-        </div>
-        <div style="display:flex;gap:0.4rem;">
-          <button onclick="guardarEditGasto(${propId},${g.id})" style="background:#065f46;color:white;border:none;border-radius:6px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer;flex:1;">✓ Guardar</button>
-          <button onclick="document.getElementById('gasto-edit-${g.id}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:6px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer;">✕</button>
         </div>
       </div>
     `).join('')}
@@ -1871,7 +1181,7 @@ function verGastos(propId){
     <div class="field"><label>Categoría</label><select id="g-cat" onchange="onCatChange()">
       <option value="Comunidad">Comunidad</option><option value="Hipoteca">Hipoteca</option>
       <option value="IBI">IBI (anual ÷12)</option><option value="Seguro">Seguro (anual ÷12)</option>
-      <option value="Agua">Agua</option><option value="Internet">Internet</option><option value="Luz">Luz</option><option value="Gas">Gas</option><option value="Avería">Avería</option><option value="Mantenimiento">Mantenimiento</option>
+      <option value="Avería">Avería</option><option value="Mantenimiento">Mantenimiento</option>
       <option value="Gestión">Gestión</option><option value="Otro">Otro</option>
     </select></div>
     <div class="field" id="g-anual-wrap" style="display:none;">
@@ -1915,84 +1225,32 @@ function guardarGasto(propId){
   saveData();verGastos(propId);
 }
 function borrarGasto(propId,gId){const p=propiedades.find(x=>x.id===propId);p.gastos=p.gastos.filter(g=>g.id!==gId);saveData();verGastos(propId);}
-function editarGasto(propId,gId){
-  const wrap=document.getElementById('gasto-edit-'+gId);
-  if(wrap) wrap.style.display=wrap.style.display==='none'?'block':'none';
-}
-function guardarEditGasto(propId,gId){
-  const p=propiedades.find(x=>x.id===propId),g=(p.gastos||[]).find(x=>x.id===gId);
-  if(!g) return;
-  const conEl=document.getElementById('ge-con-'+gId),impEl=document.getElementById('ge-imp-'+gId);
-  if(!conEl||!impEl) return;
-  g.concepto=conEl.value.trim()||g.concepto;
-  const v=parseFloat(impEl.value)||0;
-  if(g.tipoAnual){g.importeAnual=v;g.importe=Math.round(v/12*100)/100;}
-  else{g.importe=v;}
-  const mesEl=document.getElementById('ge-mes-'+gId),anioEl=document.getElementById('ge-anio-'+gId),recEl=document.getElementById('ge-rec-'+gId);
-  if(mesEl){const m=parseInt(mesEl.value);if(m>=1&&m<=12)g.mes=m;}
-  if(anioEl){const a=parseInt(anioEl.value);if(a>=2020&&a<=2100)g.anio=a;}
-  if(recEl)g.recurrente=recEl.checked;
-  saveData();verGastos(propId);
-}
 
 // ── SUMINISTROS ───────────────────────────────────────
 function verSuministrosProp(propId){
   const p=propiedades.find(x=>x.id===propId),totalProp=(p.suministros||[]).filter(s=>s.pagador==='Propietario').reduce((a,s)=>a+s.importe,0);
-  const mesAnteriorVal=ANIO_ACTUAL+'-'+(MES_ACTUAL-1===0?'12':String(MES_ACTUAL-1).padStart(2,'0'));
   showModal(`
     <button class="modal-close" onclick="closeModal()">✕</button>
     <div class="modal-title">💡 Suministros — ${p.nombre}</div>
     ${p.tipo==='habitaciones'?`<div class="info-box">Los suministros de viviendas por habitaciones son de la propiedad entera.</div>`:''}
     ${totalProp>0?`<div style="font-size:0.8rem;color:#888;margin-bottom:0.7rem;">Total propietario: <strong style="color:#991b1b;">${fmt(totalProp)}€</strong></div>`:''}
     ${!(p.suministros&&p.suministros.length)?'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin suministros</p>':''}
-    ${(p.suministros||[]).map(s=>{
-      const per=mesConsumoSum(s);
-      const pagado=s.estado==='Pagado';
-      return`<div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.3rem;">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <div>
-            <div class="li-title">${s.tipo}</div>
-            <div class="li-sub" style="display:flex;flex-wrap:wrap;gap:0.3rem;align-items:center;">
-              <span>${s.pagador}</span>
-              <span style="background:#ede9fe;color:#5b21b6;border-radius:10px;padding:0.1rem 0.4rem;font-size:0.68rem;font-weight:600;">📅 ${per.label}</span>
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:0.35rem;">
-            <span class="badge badge-${pagado?'green':'orange'}" style="cursor:pointer;" onclick="toggleSumEstado(${propId},${s.id})">${pagado?'✓ Pagado ↩':'⏳ Pend. ✓'}</span>
-            <span style="font-weight:700;">${fmt(s.importe)}€</span>
-            <button onclick="editarFechaSum(${propId},${s.id})" style="background:none;border:none;cursor:pointer;font-size:0.85rem;color:#6b7280;" title="Editar">✏️</button>
-            <button onclick="borrarSum(${propId},${s.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;">✕</button>
-          </div>
+    ${(p.suministros||[]).map(s=>`
+      <div class="list-item">
+        <div><div class="li-title">${s.tipo}</div><div class="li-sub">${s.periodo||''} · ${s.pagador}${s.fechaPago?' · pagado el '+s.fechaPago.slice(8,10):''}</div></div>
+        <div style="display:flex;align-items:center;gap:0.4rem;">
+          <span class="badge badge-${s.estado==='Pagado'?'green':'orange'}">${s.estado}</span>
+          <span style="font-weight:700;">${fmt(s.importe)}€</span>
+          <button onclick="toggleSumEstado(${propId},${s.id})" style="background:none;border:none;cursor:pointer;font-size:1rem;">${s.estado==='Pagado'?'↩':'✓'}</button>
+          <button onclick="borrarSum(${propId},${s.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;">✕</button>
         </div>
-        ${pagado&&s.fechaPago?`<div style="font-size:0.72rem;color:#065f46;background:#f0fdf4;border-radius:6px;padding:0.2rem 0.5rem;">✅ ${fmtMesCobro(s.mesCobro)?fmtMesCobro(s.mesCobro)+' · pagado el ':'Pagado el '}${fmtFechaPago(s.fechaPago)}</div>`:''}
-        <div id="fecha-sum-edit-${s.id}" style="display:none;background:#f8fafc;border-radius:8px;padding:0.5rem 0.6rem;border:1px solid #e5e7eb;">
-          <div style="font-size:0.72rem;font-weight:700;color:#888;margin-bottom:0.35rem;">Editar suministro</div>
-          <div style="display:flex;flex-direction:column;gap:0.3rem;">
-            <div style="display:flex;gap:0.3rem;align-items:center;">
-              <span style="font-size:0.72rem;color:#666;min-width:48px;">Título</span>
-              <input id="fse-tit-${s.id}" type="text" value="${s.tipo}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
-            </div>
-            <div style="display:flex;gap:0.3rem;align-items:center;">
-              <span style="font-size:0.72rem;color:#666;min-width:48px;">Período</span>
-              <input type="month" id="fse-per-${s.id}" value="${s.periodoFecha||mesAnteriorVal}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
-            </div>
-            <div style="display:flex;gap:0.3rem;align-items:center;">
-              <span style="font-size:0.72rem;color:#666;min-width:48px;">F.pago</span>
-              <input type="date" id="fecha-sum-input-${s.id}" value="${s.fechaPago||new Date().toISOString().slice(0,10)}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.4rem;border:1px solid #d1d5db;border-radius:4px;"/>
-            </div>
-            <div style="display:flex;gap:0.3rem;margin-top:0.1rem;">
-              <button onclick="guardarFechaSum(${propId},${s.id})" style="background:#065f46;color:white;border:none;border-radius:5px;padding:0.3rem 0.6rem;font-size:0.75rem;cursor:pointer;flex:1;">✓ Guardar</button>
-              <button onclick="document.getElementById('fecha-sum-edit-${s.id}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:5px;color:#6b7280;cursor:pointer;font-size:0.75rem;padding:0.3rem 0.4rem;">✕</button>
-            </div>
-          </div>
-        </div>
-      </div>`;
-    }).join('')}
+      </div>
+    `).join('')}
     <hr class="divider"/>
     <div style="font-size:0.85rem;font-weight:700;margin-bottom:0.7rem;">Añadir suministro</div>
     <div class="field"><label>Tipo</label><select id="s-tipo"><option>Luz</option><option>Agua</option><option>Gas</option><option>Internet</option><option>Basuras</option><option>Otro</option></select></div>
     <div class="field-row">
-      <div class="field"><label>Período de consumo</label><input id="s-per" type="month" value="${mesAnteriorVal}" /></div>
+      <div class="field"><label>Periodo (ej: 2025-05)</label><input id="s-per" placeholder="2025-05"/></div>
       <div class="field"><label>Importe (€)</label><input id="s-imp" type="number"/></div>
     </div>
     <div class="field-row">
@@ -2011,66 +1269,17 @@ function verSuministrosProp(propId){
 }
 function toggleSumEstado(propId,sId){
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  if(s){
-    s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';
-    if(s.estado==='Pagado'&&!s.fechaPago) s.fechaPago=new Date().toISOString().slice(0,10);
-    if(s.estado==='Pagado'&&!s.mesCobro) s.mesCobro=mesCorrespondiente();
-    if(s.estado==='Pendiente'){s.fechaPago=null;s.mesCobro=null;}
-  }
+  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;}
   verSuministrosProp(propId);saveData();
-}
-function editarFechaSum(propId,sId){
-  const wrap=document.getElementById('fecha-sum-edit-'+sId);
-  if(wrap) wrap.style.display=wrap.style.display==='none'?'block':'none';
-}
-function guardarFechaSum(propId,sId){
-  const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  const inp=document.getElementById('fecha-sum-input-'+sId);
-  const titEl=document.getElementById('fse-tit-'+sId);
-  const perEl=document.getElementById('fse-per-'+sId);
-  if(s){
-    if(inp&&inp.value){s.fechaPago=inp.value;s.estado='Pagado';if(!s.mesCobro)s.mesCobro=mesCorrespondiente();}
-    if(titEl&&titEl.value.trim()) s.tipo=titEl.value.trim();
-    if(perEl&&perEl.value) s.periodoFecha=perEl.value;
-    saveData();
-  }
-  verSuministrosProp(propId);
 }
 function guardarSum(propId){
   const p=propiedades.find(x=>x.id===propId),imp=parseFloat(document.getElementById('s-imp').value)||0;
   if(!imp){alert('Importe obligatorio');return;}
   p.suministros=p.suministros||[];
-  const perVal=document.getElementById('s-per').value;
-  p.suministros.push({id:nextId++,tipo:document.getElementById('s-tipo').value,periodo:perVal,periodoFecha:perVal,importe:imp,pagador:document.getElementById('s-pag').value,estado:document.getElementById('s-est').value,recurrente:document.getElementById('s-rec').checked});
+  p.suministros.push({id:nextId++,tipo:document.getElementById('s-tipo').value,periodo:document.getElementById('s-per').value,importe:imp,pagador:document.getElementById('s-pag').value,estado:document.getElementById('s-est').value,recurrente:document.getElementById('s-rec').checked});
   verSuministrosProp(propId);saveData();
 }
-function borrarSum(propId,sId){const p=propiedades.find(x=>x.id===propId);p.suministros=p.suministros.filter(s=>s.id!==sId);if(currentSection==='detalle'){window._dTab='suministros';renderDetalle(document.getElementById('main-content'));}else{verSuministrosProp(propId);}saveData();}
-function toggleEditSumDetalle(propId,sId){
-  const el=document.getElementById('edit-sum-det-'+sId);
-  if(el) el.style.display=el.style.display==='none'?'block':'none';
-}
-function guardarEditSumDetalle(propId,sId){
-  const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  if(!s) return;
-  const titEl=document.getElementById('esd-tit-'+sId);
-  const perEl=document.getElementById('esd-per-'+sId);
-  const fpEl=document.getElementById('esd-fp-'+sId);
-  if(titEl&&titEl.value.trim()) s.tipo=titEl.value.trim();
-  if(perEl&&perEl.value) s.periodoFecha=perEl.value;
-  if(fpEl&&fpEl.value){
-    s.fechaPago=fpEl.value;
-    s.estado='Pagado';
-    if(!s.mesCobro)s.mesCobro=mesCorrespondiente();
-  }
-  saveData();
-  window._dTab='suministros';renderDetalle(document.getElementById('main-content'));
-}
-function editarFechaSumDetalle(propId,sId){
-  toggleEditSumDetalle(propId,sId);
-}
-function guardarFechaSumDetalle(propId,sId){
-  guardarEditSumDetalle(propId,sId);
-}
+function borrarSum(propId,sId){const p=propiedades.find(x=>x.id===propId);p.suministros=p.suministros.filter(s=>s.id!==sId);verSuministrosProp(propId);saveData();}
 
 function renderSuministrosGlobal(c){
   const todos=[];propiedades.forEach(p=>(p.suministros||[]).forEach(s=>todos.push({...s,pNombre:p.nombre,propId:p.id})));
@@ -2082,33 +1291,21 @@ function renderSuministrosGlobal(c){
       <div class="stat-box"><div class="stat-label">Pendientes</div><div class="stat-val ${pend>0?'red':''}">${pend}</div></div>
     </div>
     <div class="card">
-      ${todos.map(s=>{
-        const per=mesConsumoSum(s);
-        const pagado=s.estado==='Pagado';
-        return`<div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.25rem;">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <div>
-              <div class="li-title">${s.tipo} — ${s.pNombre}</div>
-              <div class="li-sub" style="display:flex;flex-wrap:wrap;gap:0.3rem;align-items:center;margin-top:0.15rem;">
-                <span>${s.pagador}</span>
-                <span style="background:#ede9fe;color:#5b21b6;border-radius:10px;padding:0.1rem 0.4rem;font-size:0.68rem;font-weight:600;">📅 ${per.label}</span>
-              </div>
-            </div>
-            <div style="display:flex;align-items:center;gap:0.4rem;">
-              <span class="badge badge-${pagado?'green':'orange'}">${pagado?'✓ Pagado':'⏳ Pend.'}</span>
-              <span style="font-weight:700;">${fmt(s.importe)}€</span>
-              <button onclick="toggleSumGlobal(${s.propId},${s.id})" style="background:none;border:none;cursor:pointer;font-size:1rem;" title="${pagado?'Deshacer pago':'Marcar pagado'}">${pagado?'↩':'✓'}</button>
-            </div>
+      ${todos.map(s=>`
+        <div class="list-item">
+          <div><div class="li-title">${s.tipo} — ${s.pNombre}</div><div class="li-sub">${s.periodo||''} · ${s.pagador}${s.fechaPago?' · pagado el '+s.fechaPago.slice(8,10):''}</div></div>
+          <div style="display:flex;align-items:center;gap:0.4rem;">
+            <span class="badge badge-${s.estado==='Pagado'?'green':'orange'}">${s.estado}</span>
+            <span style="font-weight:700;">${fmt(s.importe)}€</span>
+            <button onclick="toggleSumGlobal(${s.propId},${s.id})" style="background:none;border:none;cursor:pointer;font-size:1rem;">${s.estado==='Pagado'?'↩':'✓'}</button>
           </div>
-          ${pagado&&s.fechaPago?`<div style="font-size:0.71rem;color:#065f46;background:#f0fdf4;border-radius:5px;padding:0.15rem 0.45rem;">✅ Pagado el ${fmtFechaPago(s.fechaPago)}</div>`:''}
-          ${!pagado?`<div style="font-size:0.71rem;color:#9a3412;background:#fff7ed;border-radius:5px;padding:0.15rem 0.45rem;">⏳ Pendiente de pago · consumo ${per.label}</div>`:''}
-        </div>`;
-      }).join('')}
+        </div>
+      `).join('')}
     </div>`;
 }
 function toggleSumGlobal(propId,sId){
   const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;s.mesCobro=s.estado==='Pagado'?mesCorrespondiente():null;}
+  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;}
   renderSection(currentSection);saveData();
 }
 
@@ -2116,118 +1313,25 @@ function toggleSumGlobal(propId,sId){
 function renderInquilinos(c){
   const inqs=[];
   propiedades.forEach(p=>{
-    const sums=p.suministros||[];
-    if(p.tipo==='habitaciones')p.habitaciones.filter(h=>h.inquilino).forEach(h=>inqs.push({nombre:h.inquilino,tel:h.telefono,email:h.email,alquiler:h.alquiler,prop:p.nombre,propId:p.id,habId:h.id,igId:null,hab:'Hab. '+h.num,entrada:h.entrada,fin:h.finContrato,cobrado:h.cobrado,fechaCobro:h.fechaCobro||'',mesCobro:h.mesCobro||'',notas:h.notas||'',suministros:sums}));
-    else(p.ingresos||[]).filter(ig=>ig.inquilino).forEach(ig=>inqs.push({nombre:ig.inquilino,tel:ig.telefono||'',email:ig.email||'',alquiler:ig.importe,prop:p.nombre,propId:p.id,habId:null,igId:ig.id,hab:'Piso completo',entrada:ig.entrada||'',fin:ig.finContrato||'',cobrado:ig.cobrado,fechaCobro:ig.fechaCobro||'',mesCobro:ig.mesCobro||'',notas:'',suministros:sums}));
+    if(p.tipo==='habitaciones')p.habitaciones.filter(h=>h.inquilino).forEach(h=>inqs.push({nombre:h.inquilino,tel:h.telefono,email:h.email,alquiler:h.alquiler,prop:p.nombre,hab:'Hab. '+h.num,entrada:h.entrada,fin:h.finContrato,cobrado:h.cobrado}));
+    else(p.ingresos||[]).filter(ig=>ig.inquilino).forEach(ig=>inqs.push({nombre:ig.inquilino,tel:'',email:'',alquiler:ig.importe,prop:p.nombre,hab:'Piso completo',entrada:ig.entrada||'',fin:ig.finContrato||'',cobrado:ig.cobrado}));
   });
   if(!inqs.length){c.innerHTML=`<div class="empty"><div class="empty-icon">👥</div><p>Sin inquilinos registrados.<br>Añádelos desde cada propiedad.</p></div>`;return;}
-  c.innerHTML=inqs.map(i=>{
-    const hoy=new Date();
-    const fin=i.fin?new Date(i.fin):null;
-    const diasFin=fin?Math.ceil((fin-hoy)/(1000*60*60*24)):null;
-    // Suministros desglose
-    const sums=i.suministros||[];
-    let sumsHTML='';
-    if(sums.length){
-      sumsHTML=`<div style="margin-top:0.6rem;padding-top:0.6rem;border-top:1px solid #f0f0f0;">
-        <div style="font-size:0.72rem;font-weight:700;color:#888;margin-bottom:0.35rem;">💡 Suministros</div>
-        ${sums.map(s=>{
-          const per=mesConsumoSum(s);
-          const pagado=s.estado==='Pagado';
-          return`<div style="display:flex;justify-content:space-between;align-items:center;padding:0.22rem 0;border-bottom:1px solid #f9f9f9;">
-            <div>
-              <span style="font-size:0.8rem;font-weight:600;">${s.tipo}</span>
-              <span style="font-size:0.68rem;color:#888;margin-left:0.3rem;">${s.pagador==='Inquilino'?'(inquilino)':'(propietario)'}</span>
-              <div style="font-size:0.68rem;color:#6b7280;">📅 ${per.label}</div>
-            </div>
-            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.15rem;">
-              <span style="font-size:0.78rem;font-weight:700;">${fmt(s.importe)}€</span>
-              <span onclick="toggleSumInquilinos(${i.propId},${s.id})" style="cursor:pointer;display:inline-block;padding:0.15rem 0.45rem;border-radius:10px;font-size:0.68rem;font-weight:600;background:${pagado?'#d1fae5':'#ffedd5'};color:${pagado?'#065f46':'#9a3412'};">${pagado?'✓ Pagado ↩':'⏳ Pend. ✓'}</span>
-              ${pagado&&s.fechaPago?`<span style="font-size:0.65rem;color:#065f46;">el ${fmtFechaPago(s.fechaPago)}</span>`:''}
-            </div>
-          </div>`;
-        }).join('')}
-      </div>`;
-    }
-    // Formulario de edición inline
-    const editId=`inq-edit-${i.propId}-${i.habId||i.igId}`;
-    const editForm=`<div id="${editId}" style="display:none;margin-top:0.6rem;padding-top:0.6rem;border-top:1px solid #e5e7eb;background:#f8fafc;border-radius:8px;padding:0.6rem;">
-      <div style="font-size:0.72rem;font-weight:700;color:#888;margin-bottom:0.4rem;">✏️ Editar inquilino</div>
-      <div style="display:flex;flex-direction:column;gap:0.3rem;">
-        <div style="display:flex;gap:0.4rem;align-items:center;">
-          <span style="font-size:0.7rem;color:#666;min-width:56px;">Nombre</span>
-          <input id="ei-nom-${i.propId}-${i.habId||i.igId}" type="text" value="${i.nombre}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
-        </div>
-        <div style="display:flex;gap:0.4rem;align-items:center;">
-          <span style="font-size:0.7rem;color:#666;min-width:56px;">Teléfono</span>
-          <input id="ei-tel-${i.propId}-${i.habId||i.igId}" type="tel" value="${i.tel}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
-        </div>
-        <div style="display:flex;gap:0.4rem;align-items:center;">
-          <span style="font-size:0.7rem;color:#666;min-width:56px;">Email</span>
-          <input id="ei-email-${i.propId}-${i.habId||i.igId}" type="email" value="${i.email}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
-        </div>
-        <div style="display:flex;gap:0.4rem;align-items:center;">
-          <span style="font-size:0.7rem;color:#666;min-width:56px;">Alquiler</span>
-          <input id="ei-alq-${i.propId}-${i.habId||i.igId}" type="number" value="${i.alquiler}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
-        </div>
-        <div style="display:flex;gap:0.4rem;align-items:center;">
-          <span style="font-size:0.7rem;color:#666;min-width:56px;">Entrada</span>
-          <input id="ei-ent-${i.propId}-${i.habId||i.igId}" type="date" value="${i.entrada}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
-        </div>
-        <div style="display:flex;gap:0.4rem;align-items:center;">
-          <span style="font-size:0.7rem;color:#666;min-width:56px;">Fin cont.</span>
-          <input id="ei-fin-${i.propId}-${i.habId||i.igId}" type="date" value="${i.fin}" style="flex:1;font-size:0.8rem;padding:0.25rem 0.45rem;border:1px solid #d1d5db;border-radius:5px;"/>
-        </div>
-        <div style="display:flex;gap:0.3rem;margin-top:0.2rem;">
-          <button onclick="guardarEditInquilino(${i.propId},${i.habId||'null'},${i.igId||'null'})" style="background:#1a1a1a;color:white;border:none;border-radius:5px;padding:0.3rem 0.7rem;font-size:0.78rem;cursor:pointer;flex:1;">✓ Guardar</button>
-          <button onclick="document.getElementById('${editId}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:5px;color:#6b7280;cursor:pointer;font-size:0.78rem;padding:0.3rem 0.5rem;">✕</button>
-        </div>
-      </div>
-    </div>`;
-    return`<div class="card">
+  c.innerHTML=inqs.map(i=>`
+    <div class="card">
       <div class="card-header">
         <div><div class="card-title">${i.nombre}</div><div class="card-subtitle">${i.prop} · ${i.hab}</div></div>
         <div style="display:flex;flex-direction:column;gap:0.25rem;align-items:flex-end;">
           <span class="badge badge-green">${fmt(i.alquiler)}€/mes</span>
           <span class="badge badge-${i.cobrado?'green':'orange'}">${i.cobrado?'✓ Cobrado':'⏳ Pendiente'}</span>
-          <button onclick="document.getElementById('${editId}').style.display=document.getElementById('${editId}').style.display==='none'?'block':'none'" style="background:#f3f4f6;border:none;border-radius:6px;padding:0.2rem 0.5rem;font-size:0.72rem;cursor:pointer;color:#6b7280;margin-top:0.1rem;">✏️ Editar</button>
         </div>
       </div>
       ${i.tel?`<div class="dr"><span class="lbl">📞</span><span class="val">${i.tel}</span></div>`:''}
       ${i.email?`<div class="dr"><span class="lbl">✉️</span><span class="val">${i.email}</span></div>`:''}
       ${i.entrada?`<div class="dr"><span class="lbl">📅 Entrada</span><span class="val">${i.entrada}</span></div>`:''}
-      ${i.fin?`<div class="dr"><span class="lbl">🏁 Fin contrato</span><span class="val" style="color:${diasFin!==null&&diasFin<=60?'#9a3412':'inherit'}">${i.fin}${diasFin!==null?' ('+diasFin+'d)':''}</span></div>`:''}
-      ${i.fechaCobro?`<div class="dr"><span class="lbl">💶 Último cobro</span><span class="val" style="color:${i.cobrado?'#065f46':'#9a3412'}">${(fmtMesCobro(i.mesCobro)||'cobrado')+' · pagado el '+fmtDiaMes(i.fechaCobro)}</span></div>`:''}
-      ${sumsHTML}
-      ${editForm}
-    </div>`;
-  }).join('');
-}
-
-function toggleSumInquilinos(propId,sId){
-  const p=propiedades.find(x=>x.id===propId),s=(p.suministros||[]).find(x=>x.id===sId);
-  if(s){s.estado=s.estado==='Pagado'?'Pendiente':'Pagado';s.fechaPago=s.estado==='Pagado'?new Date().toISOString().slice(0,10):null;s.mesCobro=s.estado==='Pagado'?mesCorrespondiente():null;}
-  renderSection(currentSection);saveData();
-}
-
-function guardarEditInquilino(propId,habId,igId){
-  const p=propiedades.find(x=>x.id===propId);
-  if(!p) return;
-  const key=propId+'-'+(habId||igId);
-  const nom=document.getElementById('ei-nom-'+key).value.trim();
-  const tel=document.getElementById('ei-tel-'+key).value.trim();
-  const email=document.getElementById('ei-email-'+key).value.trim();
-  const alq=parseFloat(document.getElementById('ei-alq-'+key).value)||0;
-  const entrada=document.getElementById('ei-ent-'+key).value;
-  const fin=document.getElementById('ei-fin-'+key).value;
-  if(habId&&habId!=='null'){
-    const h=p.habitaciones.find(x=>x.id===habId);
-    if(h){h.inquilino=nom;h.telefono=tel;h.email=email;h.alquiler=alq;h.entrada=entrada;h.finContrato=fin;}
-  } else if(igId&&igId!=='null'){
-    const ig=(p.ingresos||[]).find(x=>x.id===igId);
-    if(ig){ig.inquilino=nom;ig.telefono=tel;ig.email=email;ig.importe=alq;ig.entrada=entrada;ig.finContrato=fin;}
-  }
-  saveData();renderSection(currentSection);
+      ${i.fin?`<div class="dr"><span class="lbl">🏁 Fin contrato</span><span class="val">${i.fin}</span></div>`:''}
+    </div>
+  `).join('');
 }
 
 // ── IPC MODAL ─────────────────────────────────────────
@@ -2263,696 +1367,6 @@ function descartarIPC(propId,habId,igId){
   if(habId){const h=p.habitaciones.find(x=>x.id===habId);if(h)h.ipcAplicado=true;}
   else if(igId){const ig=(p.ingresos||[]).find(x=>x.id===igId);if(ig)ig.ipcAplicado=true;}
   renderSection(currentSection);saveData();
-}
-function descartarSeguroAlerta(propId,tipo){
-  const p=propiedades.find(x=>x.id===propId);
-  if(!p||!p.seguros||!p.seguros[tipo])return;
-  p.seguros[tipo].alertaDescartada=true;
-  renderSection(currentSection);saveData();
-}
-
-// ── GESTORÍA ──────────────────────────────────────────
-// Estado del módulo gestoría
-let _gAnio = ANIO_ACTUAL;
-let _gSeleccion = {}; // { propNombre: { desde: 'YYYY-MM', hasta: 'YYYY-MM', incluir: true } }
-let _gGastosSel = {}; // { propNombre: { categoría: true/false } }
-let _gPaso = 1; // 1=seleccionar propiedades/periodos, 2=gastos, 3=previsualización
-
-function renderGestoria(c){
-  if(_gPaso===1) renderGestoriaPaso1(c);
-  else if(_gPaso===2) renderGestoriaPaso2(c);
-  else if(_gPaso===3) renderGestoriaPaso3(c);
-}
-
-function renderGestoriaPaso1(c){
-  // Init selección si no existe
-  propiedades.forEach(p=>{
-    if(!_gSeleccion[p.nombre]){
-      const ini=INICIO_PROP[p.nombre]||{anio:ANIO_ACTUAL,mes:1};
-      _gSeleccion[p.nombre]={
-        incluir:true,
-        desde:ini.anio+'-'+String(ini.mes).padStart(2,'0'),
-        hasta:ANIO_ACTUAL+'-'+String(MES_ACTUAL).padStart(2,'0')
-      };
-    }
-  });
-
-  let rows='';
-  propiedades.forEach(p=>{
-    const sel=_gSeleccion[p.nombre];
-    const ini=INICIO_PROP[p.nombre]||{anio:2023,mes:1};
-    const minDate=ini.anio+'-'+String(ini.mes).padStart(2,'0');
-    rows+=`
-    <div style="background:#fff;border-radius:12px;padding:0.9rem 1rem;margin-bottom:0.7rem;border:1.5px solid ${sel.incluir?'#3b82f6':'#e5e7eb'};">
-      <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:${sel.incluir?'0.7rem':'0'};">
-        <input type="checkbox" id="gs-chk-${p.nombre}" ${sel.incluir?'checked':''} onchange="toggleGestoriaProp('${p.nombre}')" style="width:18px;height:18px;cursor:pointer;accent-color:#3b82f6;"/>
-        <label for="gs-chk-${p.nombre}" style="font-weight:700;font-size:0.95rem;cursor:pointer;flex:1;">${p.nombre}</label>
-        ${sel.incluir?`<span class="badge badge-blue" style="font-size:0.68rem;">Incluida</span>`:`<span class="badge badge-gray" style="font-size:0.68rem;">Excluida</span>`}
-      </div>
-      ${sel.incluir?`
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
-        <div>
-          <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Alquilada desde</div>
-          <input type="month" value="${sel.desde}" min="${minDate}" max="${ANIO_ACTUAL}-${String(MES_ACTUAL).padStart(2,'0')}"
-            onchange="setGestoriaDesde('${p.nombre}',this.value)"
-            style="width:100%;padding:0.4rem 0.5rem;border:1.5px solid #d1d5db;border-radius:7px;font-size:0.82rem;"/>
-        </div>
-        <div>
-          <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Hasta</div>
-          <input type="month" value="${sel.hasta}" min="${sel.desde}" max="${ANIO_ACTUAL}-${String(MES_ACTUAL).padStart(2,'0')}"
-            onchange="setGestoriaHasta('${p.nombre}',this.value)"
-            style="width:100%;padding:0.4rem 0.5rem;border:1.5px solid #d1d5db;border-radius:7px;font-size:0.82rem;"/>
-        </div>
-      </div>
-      <div style="margin-top:0.5rem;font-size:0.73rem;color:#6b7280;">
-        ${gestoriaMesesPeriodo(sel.desde,sel.hasta)} meses · ${gestoriaResumenRapido(p.nombre,sel.desde,sel.hasta)}
-      </div>
-      `:''}
-    </div>`;
-  });
-
-  // Selector de año fiscal
-  let aniosOpts='';
-  for(let y=2023;y<=ANIO_ACTUAL;y++){
-    aniosOpts+=`<option value="${y}" ${y===_gAnio?'selected':''}>${y}</option>`;
-  }
-
-  c.innerHTML=`
-    <div style="font-size:0.82rem;color:#6b7280;margin-bottom:1rem;background:#eff6ff;border-radius:8px;padding:0.6rem 0.8rem;">
-      Selecciona qué propiedades incluir y el periodo en que estuvieron <strong>legalmente alquiladas</strong>. Solo se exportarán los meses marcados.
-    </div>
-    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem;">
-      <span style="font-size:0.82rem;font-weight:600;color:#374151;">Año fiscal:</span>
-      <select onchange="_gAnio=parseInt(this.value);aplicarFiltroAnio()" style="padding:0.35rem 0.6rem;border:1.5px solid #d1d5db;border-radius:7px;font-size:0.85rem;font-weight:700;background:#fff;">
-        ${aniosOpts}
-      </select>
-      <button onclick="aplicarFiltroAnio()" style="background:#f3f4f6;border:none;border-radius:7px;padding:0.35rem 0.7rem;font-size:0.75rem;cursor:pointer;color:#374151;">Filtrar año</button>
-    </div>
-    ${rows}
-    <div style="margin-top:0.5rem;">
-      <button onclick="_gPaso=2;renderSection('gestoria')" class="btn btn-primary" style="width:100%;justify-content:center;padding:0.75rem;font-size:0.95rem;">
-        Siguiente → Seleccionar gastos
-      </button>
-    </div>
-  `;
-}
-
-function aplicarFiltroAnio(){
-  propiedades.forEach(p=>{
-    if(_gSeleccion[p.nombre]&&_gSeleccion[p.nombre].incluir){
-      const ini=INICIO_PROP[p.nombre]||{anio:_gAnio,mes:1};
-      const desdeAnio=Math.max(ini.anio,_gAnio);
-      const desDeMes=desdeAnio===_gAnio?1:(desdeAnio===ini.anio?ini.mes:1);
-      const hastaAnio=_gAnio;
-      const hastaMes=_gAnio===ANIO_ACTUAL?MES_ACTUAL:12;
-      _gSeleccion[p.nombre].desde=desdeAnio+'-'+String(desDeMes).padStart(2,'0');
-      _gSeleccion[p.nombre].hasta=hastaAnio+'-'+String(hastaMes).padStart(2,'0');
-    }
-  });
-  renderSection('gestoria');
-}
-
-function toggleGestoriaProp(nombre){
-  if(_gSeleccion[nombre]) _gSeleccion[nombre].incluir=!_gSeleccion[nombre].incluir;
-  renderSection('gestoria');
-}
-function setGestoriaDesde(nombre,val){if(_gSeleccion[nombre])_gSeleccion[nombre].desde=val;}
-function setGestoriaHasta(nombre,val){if(_gSeleccion[nombre])_gSeleccion[nombre].hasta=val;}
-
-function gestoriaMesesPeriodo(desde,hasta){
-  const [dy,dm]=desde.split('-').map(Number);
-  const [hy,hm]=hasta.split('-').map(Number);
-  return Math.max(0,(hy-dy)*12+(hm-dm)+1);
-}
-
-function gestoriaResumenRapido(propNombre,desde,hasta){
-  const [dy,dm]=desde.split('-').map(Number);
-  const [hy,hm]=hasta.split('-').map(Number);
-  let total=0;
-  for(let y=dy;y<=hy;y++){
-    const mIni=(y===dy?dm:1), mFin=(y===hy?hm:12);
-    for(let m=mIni;m<=mFin;m++){
-      const alq=alquilerHistorico(propNombre,y,m);
-      if(alq) total+=alq;
-    }
-  }
-  return fmt(total)+'€ ingresos';
-}
-
-function renderGestoriaPaso2(c){
-  // Recopilar categorías únicas de gastos por propiedad incluida
-  let bloques='';
-  propiedades.filter(p=>_gSeleccion[p.nombre]&&_gSeleccion[p.nombre].incluir).forEach(p=>{
-    // Gastos del histórico + gastos actuales de la propiedad
-    const categorias=new Set();
-    const hg=HISTORICO_GASTOS[p.nombre]||[];
-    hg.forEach(g=>categorias.add(g.categoria||g.concepto));
-    (p.gastos||[]).forEach(g=>categorias.add(g.categoria||g.concepto));
-
-    if(!_gGastosSel[p.nombre]){
-      _gGastosSel[p.nombre]={};
-      categorias.forEach(cat=>{
-        // Suministros NO incluidos por defecto (el usuario los excluye)
-        const esSum=['Agua','Luz','Gas','Internet','Electricidad','Suministros'].includes(cat);
-        _gGastosSel[p.nombre][cat]=!esSum;
-      });
-    }
-
-    let catRows='';
-    categorias.forEach(cat=>{
-      const checked=_gGastosSel[p.nombre][cat]!==false;
-      const esSum=['Agua','Luz','Gas','Internet','Electricidad','Suministros'].includes(cat);
-      catRows+=`
-      <label style="display:flex;align-items:center;gap:0.6rem;padding:0.45rem 0.3rem;border-bottom:1px solid #f3f4f6;cursor:pointer;">
-        <input type="checkbox" ${checked?'checked':''} onchange="toggleGastoCat('${p.nombre}','${cat}',this.checked)" style="width:16px;height:16px;accent-color:#065f46;cursor:pointer;"/>
-        <span style="font-size:0.85rem;flex:1;">${cat}</span>
-        ${esSum?`<span style="font-size:0.68rem;color:#9a3412;background:#ffedd5;padding:0.1rem 0.4rem;border-radius:10px;">suministro</span>`:''}
-      </label>`;
-    });
-
-    bloques+=`
-    <div style="background:#fff;border-radius:12px;padding:0.9rem 1rem;margin-bottom:0.7rem;border:1px solid #e5e7eb;">
-      <div style="font-weight:700;font-size:0.92rem;margin-bottom:0.6rem;">🏠 ${p.nombre}</div>
-      ${catRows||'<div style="font-size:0.8rem;color:#aaa;padding:0.3rem 0;">Sin gastos registrados</div>'}
-    </div>`;
-  });
-
-  c.innerHTML=`
-    <button onclick="_gPaso=1;renderSection('gestoria')" style="background:none;border:none;color:#3b82f6;font-size:0.85rem;cursor:pointer;padding:0;margin-bottom:0.8rem;">← Atrás</button>
-    <div style="font-size:0.82rem;color:#6b7280;margin-bottom:1rem;background:#fff7ed;border-radius:8px;padding:0.6rem 0.8rem;">
-      Selecciona qué <strong>gastos deducibles</strong> quieres incluir. Los suministros están desmarcados por defecto porque no son deducibles en rendimientos de capital inmobiliario.
-    </div>
-    ${bloques||'<div class="empty"><div class="empty-icon">🏠</div><div>No hay propiedades seleccionadas</div></div>'}
-    <div style="margin-top:0.5rem;">
-      <button onclick="_gPaso=3;renderSection('gestoria')" class="btn btn-primary" style="width:100%;justify-content:center;padding:0.75rem;font-size:0.95rem;">
-        Siguiente → Previsualizar y exportar
-      </button>
-    </div>
-  `;
-}
-
-function toggleGastoCat(propNombre,cat,val){
-  if(!_gGastosSel[propNombre])_gGastosSel[propNombre]={};
-  _gGastosSel[propNombre][cat]=val;
-}
-
-function renderGestoriaPaso3(c){
-  const propsSel=propiedades.filter(p=>_gSeleccion[p.nombre]&&_gSeleccion[p.nombre].incluir);
-  if(!propsSel.length){
-    c.innerHTML=`<div class="empty"><div class="empty-icon">📭</div><div>No hay propiedades seleccionadas</div></div>`;
-    return;
-  }
-
-  let totalIngresos=0, totalGastos=0;
-  let tablas='';
-
-  propsSel.forEach(p=>{
-    const sel=_gSeleccion[p.nombre];
-    const [dy,dm]=sel.desde.split('-').map(Number);
-    const [hy,hm]=sel.hasta.split('-').map(Number);
-    const gatosSel=_gGastosSel[p.nombre]||{};
-    const meses=gestoriaMesesPeriodo(sel.desde,sel.hasta);
-
-    // Calcular ingresos mes a mes
-    let ingTotal=0;
-    let ingresosMes=[];
-    for(let y=dy;y<=hy;y++){
-      const mIni=(y===dy?dm:1),mFin=(y===hy?hm:12);
-      for(let m=mIni;m<=mFin;m++){
-        const alq=alquilerHistorico(p.nombre,y,m)||0;
-        ingTotal+=alq;
-        ingresosMes.push({anio:y,mes:m,importe:alq});
-      }
-    }
-
-    // Calcular gastos deducibles seleccionados
-    const hg=HISTORICO_GASTOS[p.nombre]||p.gastos||[];
-    let gasTotal=0;
-    let gastosDetalle=[];
-    hg.forEach(g=>{
-      const cat=g.categoria||g.concepto;
-      if(gatosSel[cat]===false) return;
-      const imp=(g.importe||0)*meses;
-      gasTotal+=imp;
-      gastosDetalle.push({concepto:g.concepto,cat,importe:g.importe||0,total:imp,meses});
-    });
-    // Gastos actuales de propiedad que no estén en histórico
-    if(!HISTORICO_GASTOS[p.nombre]){
-      (p.gastos||[]).forEach(g=>{
-        const cat=g.categoria||g.concepto;
-        if(gatosSel[cat]===false) return;
-        const imp=(g.importe||0)*meses;
-        if(!gastosDetalle.find(x=>x.concepto===g.concepto)){
-          gasTotal+=imp;
-          gastosDetalle.push({concepto:g.concepto,cat,importe:g.importe||0,total:imp,meses});
-        }
-      });
-    }
-
-    totalIngresos+=ingTotal;
-    totalGastos+=gasTotal;
-    const neto=ingTotal-gasTotal;
-
-    // Tabla HTML por propiedad
-    tablas+=`
-    <div style="background:#fff;border-radius:12px;border:1px solid #e5e7eb;margin-bottom:1rem;overflow:hidden;">
-      <div style="background:#1a1a1a;padding:0.6rem 1rem;display:flex;justify-content:space-between;align-items:center;">
-        <span style="color:#fff;font-weight:700;font-size:0.9rem;">🏠 ${p.nombre}</span>
-        <span style="color:#a3e635;font-size:0.75rem;">${NOMBRES_MES[dm-1]} ${dy} → ${NOMBRES_MES[hm-1]} ${hy} (${meses}m)</span>
-      </div>
-      <div style="padding:0.7rem 1rem;">
-        <div style="font-size:0.72rem;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Ingresos</div>
-        <div style="display:flex;justify-content:space-between;padding:0.25rem 0;border-bottom:1px solid #f0f0f0;font-size:0.82rem;">
-          <span>Rendimientos íntegros del capital inmobiliario</span>
-          <span style="font-weight:700;color:#1e40af;">${fmt(ingTotal)} €</span>
-        </div>
-        <div style="font-size:0.68rem;color:#6b7280;margin-top:0.2rem;margin-bottom:0.6rem;">
-          ${ingresosMes.map(m=>`${NOMBRES_MES[m.mes-1].slice(0,3)} ${m.anio}: ${fmt(m.importe)}€`).join(' · ')}
-        </div>
-
-        ${gastosDetalle.length?`
-        <div style="font-size:0.72rem;font-weight:700;color:#991b1b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Gastos deducibles</div>
-        ${gastosDetalle.map(g=>`
-        <div style="display:flex;justify-content:space-between;padding:0.22rem 0;border-bottom:1px solid #f9fafb;font-size:0.8rem;">
-          <span style="color:#4b5563;">${g.concepto} <span style="color:#d1d5db;">(${fmt(g.importe)}€/mes × ${g.meses})</span></span>
-          <span style="color:#991b1b;">-${fmt(g.total)} €</span>
-        </div>`).join('')}`:''}
-
-        <div style="display:flex;justify-content:space-between;margin-top:0.6rem;padding:0.5rem 0.6rem;background:${neto>=0?'#f0fdf4':'#fef2f2'};border-radius:8px;">
-          <span style="font-weight:700;font-size:0.85rem;">Rendimiento neto</span>
-          <span style="font-weight:700;font-size:0.95rem;color:${neto>=0?'#065f46':'#991b1b'};">${neto>=0?'+':''}${fmt(neto)} €</span>
-        </div>
-      </div>
-    </div>`;
-  });
-
-  const netoTotal=totalIngresos-totalGastos;
-
-  c.innerHTML=`
-    <button onclick="_gPaso=2;renderSection('gestoria')" style="background:none;border:none;color:#3b82f6;font-size:0.85rem;cursor:pointer;padding:0;margin-bottom:0.8rem;">← Atrás</button>
-
-    <div style="background:#1a1a1a;border-radius:12px;padding:0.8rem 1rem;margin-bottom:1rem;display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.4rem;text-align:center;">
-      <div><div style="font-size:0.65rem;color:#9ca3af;margin-bottom:0.15rem;">Ingresos</div><div style="font-size:0.92rem;font-weight:700;color:#60a5fa;">+${fmt(totalIngresos)}€</div></div>
-      <div><div style="font-size:0.65rem;color:#9ca3af;margin-bottom:0.15rem;">Gastos</div><div style="font-size:0.92rem;font-weight:700;color:#f87171;">-${fmt(totalGastos)}€</div></div>
-      <div><div style="font-size:0.65rem;color:#9ca3af;margin-bottom:0.15rem;">Rendimiento neto</div><div style="font-size:0.92rem;font-weight:700;color:${netoTotal>=0?'#4ade80':'#f87171'};">${netoTotal>=0?'+':''}${fmt(netoTotal)}€</div></div>
-    </div>
-
-    <div style="font-size:0.75rem;color:#6b7280;background:#f9fafb;border-radius:8px;padding:0.5rem 0.8rem;margin-bottom:1rem;">
-      ℹ️ Estos datos corresponden a <strong>rendimientos del capital inmobiliario</strong> (Sch. F de la RENTA). No incluyen suministros ni gastos no seleccionados.
-    </div>
-
-    ${tablas}
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-top:0.5rem;">
-      <button onclick="exportarGestoriaCSV()" class="btn btn-success" style="justify-content:center;padding:0.65rem;font-size:0.85rem;">
-        📊 Exportar CSV
-      </button>
-      <button onclick="exportarGestoriaTXT()" class="btn btn-secondary" style="justify-content:center;padding:0.65rem;font-size:0.85rem;">
-        📄 Exportar TXT
-      </button>
-    </div>
-    <button onclick="exportarGestoriaHTML()" class="btn" style="width:100%;justify-content:center;padding:0.65rem;font-size:0.85rem;margin-top:0.5rem;background:#ede9fe;color:#5b21b6;">
-      🖨️ Generar informe para imprimir / PDF
-    </button>
-  `;
-}
-
-function buildGestoriaData(){
-  const propsSel=propiedades.filter(p=>_gSeleccion[p.nombre]&&_gSeleccion[p.nombre].incluir);
-  const rows=[];
-  propsSel.forEach(p=>{
-    const sel=_gSeleccion[p.nombre];
-    const [dy,dm]=sel.desde.split('-').map(Number);
-    const [hy,hm]=sel.hasta.split('-').map(Number);
-    const gatosSel=_gGastosSel[p.nombre]||{};
-    const meses=gestoriaMesesPeriodo(sel.desde,sel.hasta);
-    let ingTotal=0;
-    for(let y=dy;y<=hy;y++){
-      const mIni=(y===dy?dm:1),mFin=(y===hy?hm:12);
-      for(let m=mIni;m<=mFin;m++) ingTotal+=(alquilerHistorico(p.nombre,y,m)||0);
-    }
-    const hg=HISTORICO_GASTOS[p.nombre]||p.gastos||[];
-    let gasTotal=0;
-    const gastosDetalle=[];
-    hg.forEach(g=>{
-      const cat=g.categoria||g.concepto;
-      if(gatosSel[cat]===false) return;
-      const imp=(g.importe||0)*meses;
-      gasTotal+=imp;
-      gastosDetalle.push({concepto:g.concepto,importe:g.importe||0,meses,total:imp});
-    });
-    rows.push({prop:p.nombre,desde:sel.desde,hasta:sel.hasta,meses,ingTotal,gasTotal,neto:ingTotal-gasTotal,gastos:gastosDetalle});
-  });
-  return rows;
-}
-
-function exportarGestoriaCSV(){
-  const data=buildGestoriaData();
-  let csv='Propiedad;Periodo desde;Periodo hasta;Meses alquilados;Ingresos íntegros (€);Gastos deducibles (€);Rendimiento neto (€)\n';
-  data.forEach(r=>{
-    csv+=`${r.prop};${r.desde};${r.hasta};${r.meses};${r.ingTotal};${r.gasTotal};${r.neto}\n`;
-  });
-  csv+='\n';
-  csv+='DETALLE GASTOS\n';
-  csv+='Propiedad;Concepto;€/mes;Meses;Total (€)\n';
-  data.forEach(r=>{
-    r.gastos.forEach(g=>{
-      csv+=`${r.prop};${g.concepto};${g.importe};${g.meses};${g.total}\n`;
-    });
-  });
-  const tot=data.reduce((a,r)=>({ing:a.ing+r.ingTotal,gas:a.gas+r.gasTotal}),{ing:0,gas:0});
-  csv+=`\nTOTAL;;;;;${tot.ing};${tot.gas};${tot.ing-tot.gas}\n`;
-  csv+=`\nGenerado el;${new Date().toLocaleDateString('es-ES')}\n`;
-
-  const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;a.download='gestoria_renta_'+_gAnio+'.csv';a.click();
-  URL.revokeObjectURL(url);
-}
-
-function exportarGestoriaTXT(){
-  const data=buildGestoriaData();
-  let txt='DATOS PARA DECLARACIÓN DE LA RENTA\n';
-  txt+='RENDIMIENTOS DEL CAPITAL INMOBILIARIO\n';
-  txt+='='.repeat(50)+'\n';
-  txt+=`Generado el: ${new Date().toLocaleDateString('es-ES')}\n\n`;
-
-  data.forEach(r=>{
-    txt+=`\n🏠 ${r.prop.toUpperCase()}\n`;
-    txt+='-'.repeat(40)+'\n';
-    txt+=`Periodo alquilado: ${r.desde} a ${r.hasta} (${r.meses} meses)\n`;
-    txt+=`\nINGRESOS:\n`;
-    txt+=`  Rendimientos íntegros: ${fmt(r.ingTotal)} €\n`;
-    if(r.gastos.length){
-      txt+=`\nGASTOS DEDUCIBLES:\n`;
-      r.gastos.forEach(g=>{
-        txt+=`  ${g.concepto.padEnd(28)} ${fmt(g.importe)}€/mes × ${g.meses} = ${fmt(g.total)} €\n`;
-      });
-    }
-    txt+=`\nRENDIMIENTO NETO: ${fmt(r.neto)} €\n`;
-    txt+='\n';
-  });
-
-  const tot=data.reduce((a,r)=>({ing:a.ing+r.ingTotal,gas:a.gas+r.gasTotal}),{ing:0,gas:0});
-  txt+='='.repeat(50)+'\n';
-  txt+=`TOTAL INGRESOS:          ${fmt(tot.ing)} €\n`;
-  txt+=`TOTAL GASTOS DEDUCIBLES: ${fmt(tot.gas)} €\n`;
-  txt+=`RENDIMIENTO NETO TOTAL:  ${fmt(tot.ing-tot.gas)} €\n`;
-
-  const blob=new Blob([txt],{type:'text/plain;charset=utf-8'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;a.download='gestoria_renta_'+_gAnio+'.txt';a.click();
-  URL.revokeObjectURL(url);
-}
-
-function exportarGestoriaHTML(){
-  const data=buildGestoriaData();
-  const tot=data.reduce((a,r)=>({ing:a.ing+r.ingTotal,gas:a.gas+r.gasTotal}),{ing:0,gas:0});
-  const netoTotal=tot.ing-tot.gas;
-
-  let propTablas='';
-  data.forEach(r=>{
-    propTablas+=`
-    <div class="prop-bloque">
-      <h3>🏠 ${r.prop}</h3>
-      <p class="periodo">Periodo alquilado: <strong>${r.desde}</strong> → <strong>${r.hasta}</strong> (${r.meses} meses)</p>
-      <table>
-        <tr><th colspan="2">INGRESOS</th></tr>
-        <tr><td>Rendimientos íntegros del capital inmobiliario</td><td class="num ing">${fmt(r.ingTotal)} €</td></tr>
-      </table>
-      ${r.gastos.length?`
-      <table style="margin-top:0.5rem;">
-        <tr><th colspan="3">GASTOS DEDUCIBLES</th><th></th></tr>
-        <tr><th>Concepto</th><th>€/mes</th><th>Meses</th><th>Total</th></tr>
-        ${r.gastos.map(g=>`<tr><td>${g.concepto}</td><td class="num">${fmt(g.importe)} €</td><td class="num">${g.meses}</td><td class="num gas">-${fmt(g.total)} €</td></tr>`).join('')}
-      </table>`:''}
-      <div class="neto-row">
-        <span>Rendimiento neto reducido</span>
-        <span class="${r.neto>=0?'pos':'neg'}">${r.neto>=0?'+':''}${fmt(r.neto)} €</span>
-      </div>
-    </div>`;
-  });
-
-  const html=`<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8"/>
-<title>Informe Gestoría – Renta ${_gAnio}</title>
-<style>
-body{font-family:Arial,sans-serif;max-width:700px;margin:2rem auto;color:#1a1a1a;font-size:13px;}
-h1{font-size:1.3rem;margin-bottom:0.2rem;}
-.sub{color:#666;font-size:0.85rem;margin-bottom:1.5rem;}
-.prop-bloque{border:1px solid #e5e7eb;border-radius:8px;padding:1rem;margin-bottom:1.2rem;}
-h3{margin-bottom:0.3rem;font-size:1rem;}
-.periodo{color:#6b7280;font-size:0.8rem;margin-bottom:0.7rem;}
-table{width:100%;border-collapse:collapse;font-size:0.82rem;}
-th{background:#f3f4f6;padding:0.35rem 0.5rem;text-align:left;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;}
-td{padding:0.3rem 0.5rem;border-bottom:1px solid #f3f4f6;}
-.num{text-align:right;}
-.ing{color:#1e40af;font-weight:700;}
-.gas{color:#991b1b;}
-.neto-row{display:flex;justify-content:space-between;margin-top:0.7rem;padding:0.5rem 0.6rem;background:#f9fafb;border-radius:6px;font-weight:700;}
-.pos{color:#065f46;}.neg{color:#991b1b;}
-.resumen{background:#1a1a1a;color:#fff;border-radius:8px;padding:1rem;margin-bottom:1.5rem;display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;text-align:center;}
-.resumen .lbl{font-size:0.65rem;color:#9ca3af;margin-bottom:0.2rem;}
-.resumen .val{font-size:1.1rem;font-weight:700;}
-.footer{color:#aaa;font-size:0.72rem;margin-top:2rem;text-align:center;}
-@media print{body{margin:0;}.footer{display:none;}}
-</style>
-</head>
-<body>
-<h1>Informe para Gestoría</h1>
-<div class="sub">Rendimientos del Capital Inmobiliario · Ejercicio ${_gAnio} · Generado el ${new Date().toLocaleDateString('es-ES')}</div>
-<div class="resumen">
-  <div><div class="lbl">Ingresos íntegros</div><div class="val" style="color:#60a5fa;">+${fmt(tot.ing)} €</div></div>
-  <div><div class="lbl">Gastos deducibles</div><div class="val" style="color:#f87171;">-${fmt(tot.gas)} €</div></div>
-  <div><div class="lbl">Rendimiento neto</div><div class="val" style="color:${netoTotal>=0?'#4ade80':'#f87171'};">${netoTotal>=0?'+':''}${fmt(netoTotal)} €</div></div>
-</div>
-${propTablas}
-<div class="footer">Generado desde Mis Alquileres · ${new Date().toLocaleString('es-ES')}</div>
-</body>
-</html>`;
-
-  const blob=new Blob([html],{type:'text/html;charset=utf-8'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;a.download='informe_gestoria_'+_gAnio+'.html';a.click();
-  URL.revokeObjectURL(url);
-}
-
-// ── SEGUROS ────────────────────────────────────────────
-const TIPOS_SEGURO=['hogar','alquiler','vida'];
-const LABELS_SEGURO={'hogar':'🏠 Seguro Hogar','alquiler':'🔑 Seguro Alquiler','vida':'❤️ Seguro de Vida'};
-const PERIODOS_PAGO=['Mensual','Trimestral','Semestral','Anual'];
-
-function getSegurosProp(p){
-  if(!p.seguros) p.seguros={hogar:{},alquiler:{},vida:{}};
-  TIPOS_SEGURO.forEach(t=>{if(!p.seguros[t])p.seguros[t]={};});
-  return p.seguros;
-}
-
-function renderSegurosTab(p){
-  const seg=getSegurosProp(p);
-  let html='';
-  TIPOS_SEGURO.forEach(tipo=>{
-    const s=seg[tipo]||{};
-    const activo=s.compania||s.importe;
-    html+=`
-    <div style="background:#fff;border-radius:12px;border:1.5px solid ${activo?'#3b82f6':'#e5e7eb'};margin-bottom:0.8rem;overflow:hidden;">
-      <div style="background:${activo?'#eff6ff':'#f9fafb'};padding:0.65rem 1rem;display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="toggleSeguroForm(${p.id},'${tipo}')">
-        <span style="font-weight:700;font-size:0.92rem;">${LABELS_SEGURO[tipo]}</span>
-        <div style="display:flex;align-items:center;gap:0.5rem;">
-          ${activo?`<span style="font-size:0.72rem;background:#dbeafe;color:#1e40af;padding:0.15rem 0.5rem;border-radius:10px;font-weight:600;">${s.compania||'—'} · ${s.importe?s.importe+'€':'—'}</span>`:'<span style="font-size:0.72rem;color:#aaa;">Sin datos</span>'}
-          <span style="font-size:0.8rem;color:#6b7280;" id="seg-ico-${p.id}-${tipo}">✏️</span>
-        </div>
-      </div>
-      <div id="seg-form-${p.id}-${tipo}" style="display:none;padding:0.8rem 1rem;">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-bottom:0.6rem;">
-          <div>
-            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Compañía aseguradora</div>
-            <input id="sf-comp-${p.id}-${tipo}" type="text" value="${s.compania||''}" placeholder="Ej: Mapfre" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
-          </div>
-          <div>
-            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Teléfono de contacto</div>
-            <input id="sf-tel-${p.id}-${tipo}" type="tel" value="${s.telefono||''}" placeholder="900 000 000" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
-          </div>
-          <div>
-            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Importe (€)</div>
-            <input id="sf-imp-${p.id}-${tipo}" type="number" value="${s.importe||''}" placeholder="0" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
-          </div>
-          <div>
-            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Periodicidad de pago</div>
-            <select id="sf-per-${p.id}-${tipo}" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;">
-              ${PERIODOS_PAGO.map(pp=>`<option value="${pp}" ${s.periodo===pp?'selected':''}>${pp}</option>`).join('')}
-            </select>
-          </div>
-          ${(s.periodo||'Mensual')!=='Mensual'?`
-          <div>
-            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Próximo pago</div>
-            <input id="sf-pago-${p.id}-${tipo}" type="date" value="${s.proximoPago||''}" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
-          </div>`:'<div></div>'}
-          <div>
-            <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Fecha de renovación</div>
-            <input id="sf-ren-${p.id}-${tipo}" type="date" value="${s.renovacion||''}" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
-          </div>
-        </div>
-        <div style="margin-bottom:0.6rem;">
-          <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Número de póliza</div>
-          <input id="sf-pol-${p.id}-${tipo}" type="text" value="${s.poliza||''}" placeholder="Nº póliza / referencia" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
-        </div>
-        <div style="margin-bottom:0.8rem;">
-          <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Notas / cobertura</div>
-          <textarea id="sf-not-${p.id}-${tipo}" rows="2" placeholder="Coberturas, condiciones especiales..." style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;resize:none;">${s.notas||''}</textarea>
-        </div>
-        <div style="display:flex;gap:0.5rem;">
-          <button onclick="guardarSeguro(${p.id},'${tipo}')" style="background:#1a1a1a;color:#fff;border:none;border-radius:8px;padding:0.45rem 1rem;font-size:0.82rem;font-weight:600;cursor:pointer;flex:1;">✓ Guardar</button>
-          <button onclick="document.getElementById('seg-form-${p.id}-${tipo}').style.display='none'" style="background:none;border:1.5px solid #e0e0e0;border-radius:8px;padding:0.45rem 0.8rem;font-size:0.82rem;cursor:pointer;color:#6b7280;">✕</button>
-        </div>
-      </div>
-      ${activo?`
-      <div style="padding:0 1rem 0.7rem;">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;font-size:0.75rem;">
-          ${s.poliza?`<div style="color:#6b7280;">📋 Póliza: <strong>${s.poliza}</strong></div>`:''}
-          ${s.periodo?`<div style="color:#6b7280;">🔄 Pago: <strong>${s.periodo}</strong></div>`:''}
-          ${s.telefono?`<div style="color:#6b7280;">📞 <strong>${s.telefono}</strong></div>`:''}
-          ${s.proximoPago&&s.periodo!=='Mensual'?`<div style="color:#1e40af;">💳 Próx. pago: <strong>${fmtFechaPago(s.proximoPago)}</strong></div>`:''}
-          ${s.renovacion?`<div style="color:#9a3412;">🔔 Renovación: <strong>${fmtFechaPago(s.renovacion)}</strong></div>`:''}
-        </div>
-        ${s.notas?`<div style="margin-top:0.3rem;font-size:0.73rem;color:#6b7280;background:#f8f8f8;border-radius:6px;padding:0.3rem 0.5rem;">${s.notas}</div>`:''}
-      </div>`:''
-    }
-    </div>`;
-  });
-  return html||'<div class="empty"><div class="empty-icon">🛡️</div><p>Toca cada seguro para añadir datos</p></div>';
-}
-
-function toggleSeguroForm(propId,tipo){
-  const el=document.getElementById('seg-form-'+propId+'-'+tipo);
-  if(el) el.style.display=el.style.display==='none'?'block':'none';
-}
-
-function guardarSeguro(propId,tipo){
-  const p=propiedades.find(x=>x.id===propId);
-  if(!p) return;
-  if(!p.seguros) p.seguros={};
-  if(!p.seguros[tipo]) p.seguros[tipo]={};
-  const s=p.seguros[tipo];
-  s.compania=document.getElementById('sf-comp-'+propId+'-'+tipo).value.trim();
-  s.telefono=document.getElementById('sf-tel-'+propId+'-'+tipo).value.trim();
-  s.importe=parseFloat(document.getElementById('sf-imp-'+propId+'-'+tipo).value)||null;
-  const periodoNuevo=document.getElementById('sf-per-'+propId+'-'+tipo).value;
-  s.periodo=periodoNuevo;
-  const pagoEl=document.getElementById('sf-pago-'+propId+'-'+tipo);
-  s.proximoPago=(periodoNuevo==='Mensual')?null:(pagoEl?pagoEl.value||null:null);
-  const nuevaRen=document.getElementById('sf-ren-'+propId+'-'+tipo).value||null;
-  if(nuevaRen!==s.renovacion)s.alertaDescartada=false;
-  s.renovacion=nuevaRen;
-  s.poliza=document.getElementById('sf-pol-'+propId+'-'+tipo).value.trim();
-  s.notas=document.getElementById('sf-not-'+propId+'-'+tipo).value.trim();
-  saveData();
-  window._dTab='seguros';
-  renderDetalle(document.getElementById('main-content'));
-}
-
-// ── DOCUMENTOS ─────────────────────────────────────────
-function renderDocumentosTab(p){
-  if(!p.documentos) p.documentos={};
-  const d=p.documentos;
-  let html=`
-  <div style="background:#fff;border-radius:12px;border:1.5px solid #e5e7eb;margin-bottom:0.8rem;overflow:hidden;">
-    <div style="background:#f8f8f8;padding:0.65rem 1rem;font-weight:700;font-size:0.92rem;">📜 Nota Simple</div>
-    <div style="padding:0.8rem 1rem;">
-      ${d.notaSimpleDoc?`
-      <div style="display:flex;align-items:center;gap:0.5rem;background:#f0fdf4;border-radius:8px;padding:0.45rem 0.7rem;">
-        <span style="font-size:0.8rem;font-weight:600;color:#065f46;">📄 ${d.notaSimpleDoc.nombre}</span>
-        <span style="font-size:0.72rem;color:#888;">${d.notaSimpleDoc.fecha}</span>
-        <a href="${d.notaSimpleDoc.data}" download="${d.notaSimpleDoc.nombre}" style="margin-left:auto;background:#1a1a1a;color:#fff;text-decoration:none;padding:0.2rem 0.6rem;border-radius:6px;font-size:0.72rem;">⬇️</a>
-        <button onclick="borrarDocProp(${p.id},'notaSimpleDoc')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:0.9rem;">✕</button>
-      </div>`:
-      `<label style="display:inline-flex;align-items:center;gap:0.4rem;background:#f3f4f6;border:1.5px dashed #d1d5db;border-radius:8px;padding:0.45rem 0.8rem;cursor:pointer;font-size:0.82rem;color:#6b7280;">
-        📎 Subir nota simple
-        <input type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" style="display:none;" onchange="subirDocProp(${p.id},'notaSimpleDoc',this)"/>
-      </label>`}
-    </div>
-  </div>
-
-  <div style="background:#fff;border-radius:12px;border:1.5px solid #e5e7eb;margin-bottom:0.8rem;overflow:hidden;">
-    <div style="background:#f8f8f8;padding:0.65rem 1rem;font-weight:700;font-size:0.92rem;">🗺️ Referencia Catastral</div>
-    <div style="padding:0.8rem 1rem;">
-      <div style="margin-bottom:0.6rem;">
-        <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Referencia catastral</div>
-        <input id="doc-cat-ref-${p.id}" type="text" value="${d.catastralRef||''}" placeholder="Ej: 1234567AB1234A0001LM" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;font-family:monospace;letter-spacing:0.05em;"/>
-      </div>
-      <div style="margin-bottom:0.6rem;">
-        <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Superficie construida (m²)</div>
-        <input id="doc-cat-sup-${p.id}" type="number" value="${d.catastralSuperficie||''}" placeholder="0" style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;"/>
-      </div>
-      <div style="margin-bottom:0.6rem;">
-        <div style="font-size:0.7rem;color:#666;margin-bottom:0.2rem;">Notas</div>
-        <textarea id="doc-cat-notas-${p.id}" rows="2" placeholder="Observaciones catastrales..." style="width:100%;padding:0.45rem 0.6rem;border:1.5px solid #e0e0e0;border-radius:8px;font-size:0.85rem;resize:none;">${d.catastralNotas||''}</textarea>
-      </div>
-      <div style="margin-bottom:0.8rem;">
-        <div style="font-size:0.7rem;color:#666;margin-bottom:0.3rem;">Archivo (PDF/imagen)</div>
-        ${d.catastralDoc?`
-        <div style="display:flex;align-items:center;gap:0.5rem;background:#f0fdf4;border-radius:8px;padding:0.45rem 0.7rem;">
-          <span style="font-size:0.8rem;font-weight:600;color:#065f46;">📄 ${d.catastralDoc.nombre}</span>
-          <span style="font-size:0.72rem;color:#888;">${d.catastralDoc.fecha}</span>
-          <a href="${d.catastralDoc.data}" download="${d.catastralDoc.nombre}" style="margin-left:auto;background:#1a1a1a;color:#fff;text-decoration:none;padding:0.2rem 0.6rem;border-radius:6px;font-size:0.72rem;">⬇️</a>
-          <button onclick="borrarDocProp(${p.id},'catastralDoc')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:0.9rem;">✕</button>
-        </div>`:
-        `<label style="display:inline-flex;align-items:center;gap:0.4rem;background:#f3f4f6;border:1.5px dashed #d1d5db;border-radius:8px;padding:0.45rem 0.8rem;cursor:pointer;font-size:0.82rem;color:#6b7280;">
-          📎 Subir referencia catastral
-          <input type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" style="display:none;" onchange="subirDocProp(${p.id},'catastralDoc',this)"/>
-        </label>`}
-      </div>
-      <button onclick="guardarDocumentos(${p.id})" style="background:#1a1a1a;color:#fff;border:none;border-radius:8px;padding:0.45rem 1rem;font-size:0.82rem;font-weight:600;cursor:pointer;width:100%;">✓ Guardar datos Catastro</button>
-    </div>
-  </div>`;
-  return html;
-}
-
-function guardarDocumentos(propId){
-  const p=propiedades.find(x=>x.id===propId);
-  if(!p) return;
-  if(!p.documentos) p.documentos={};
-  const d=p.documentos;
-  // Nota Simple - sin campos de datos, solo archivo
-  // Catastral
-  const catRef=document.getElementById('doc-cat-ref-'+propId);
-  const catSup=document.getElementById('doc-cat-sup-'+propId);
-  const catNotas=document.getElementById('doc-cat-notas-'+propId);
-  if(catRef) d.catastralRef=catRef.value.trim();
-  if(catSup) d.catastralSuperficie=parseFloat(catSup.value)||null;
-  if(catNotas) d.catastralNotas=catNotas.value.trim();
-  saveData();
-  window._dTab='documentos';
-  renderDetalle(document.getElementById('main-content'));
-  showToast('✓ Guardado');
-}
-
-function subirDocProp(propId,campo,input){
-  const file=input.files[0];if(!file)return;
-  const reader=new FileReader();
-  reader.onload=e=>{
-    const p=propiedades.find(x=>x.id===propId);
-    if(!p.documentos) p.documentos={};
-    p.documentos[campo]={nombre:file.name,data:e.target.result,fecha:new Date().toLocaleDateString('es-ES')};
-    saveData();
-    window._dTab='documentos';
-    renderDetalle(document.getElementById('main-content'));
-  };
-  reader.readAsDataURL(file);
-}
-
-function borrarDocProp(propId,campo){
-  if(!confirm('¿Eliminar este documento?'))return;
-  const p=propiedades.find(x=>x.id===propId);
-  if(p.documentos) delete p.documentos[campo];
-  saveData();
-  window._dTab='documentos';
-  renderDetalle(document.getElementById('main-content'));
 }
 
 // ── MODAL ─────────────────────────────────────────────
