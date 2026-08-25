@@ -508,12 +508,11 @@ function calcMes(anio, mes){
         (p.ingresos||[]).forEach(ig=>{ingresos+=importeConIPC(ig.importe,ig.entrada)||0;});
       }
     }
-    // Gastos: usar histórico si existe
-    const hg=gastosHistoricos(p.nombre,anio,mes);
-    if(hg){
-      hg.forEach(g=>gastos+=(g.importe||0));
-    } else if(propActiva(p.nombre,anio,mes)){
-      (p.gastos||[]).forEach(g=>gastos+=(g.importe||0));
+    // Gastos: histórico fijo (si existe) + gastos puntuales del mes + suministros a cargo del propietario
+    if(propActiva(p.nombre,anio,mes)){
+      const hg=gastosHistoricos(p.nombre,anio,mes);
+      if(hg) hg.forEach(g=>gastos+=(g.importe||0));
+      (p.gastos||[]).filter(g=>g.mes===mes&&g.anio===anio).forEach(g=>gastos+=(g.importe||0));
       (p.suministros||[]).filter(s=>s.pagador==='Propietario').forEach(s=>gastos+=(s.importe||0));
     }
   });
@@ -534,8 +533,9 @@ function detalleMes(anio, mes){
     if(histImp!==null){ing=histImp;}
     else if(p.tipo==='habitaciones'){p.habitaciones.filter(h=>h.inquilino).forEach(h=>{ing+=importeConIPC(h.alquiler,h.entrada)||0;});}
     else{(p.ingresos||[]).forEach(ig=>{ing+=importeConIPC(ig.importe,ig.entrada)||0;});}
-    const hg=gastosHistoricos(p.nombre,anio,mes)||p.gastos||[];
-    const gasLista=hg.map(g=>({concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0}));
+    const hg=gastosHistoricos(p.nombre,anio,mes)||[];
+    const gastosMes=(p.gastos||[]).filter(g=>g.mes===mes&&g.anio===anio);
+    const gasLista=[...hg,...gastosMes].map(g=>({concepto:g.concepto,categoria:g.categoria||g.concepto,importe:g.importe||0}));
     const gas=gasLista.reduce((a,g)=>a+g.importe,0);
     return{nombre:p.nombre,ing,gas,neto:ing-gas,gasLista};
   }).filter(Boolean);
