@@ -200,7 +200,7 @@ async function loadFromCloud(){
     if(data&&data.data){
       const d=JSON.parse(data.data);
       if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;}
-      if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{},ultimoReset:d.overrides.ultimoReset||null};}
+      if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{},ultimoReset:d.overrides.ultimoReset||null,gastoFijo:d.overrides.gastoFijo||{}};}
       else{migrarOverridesLocales();}
       return;
     }
@@ -209,7 +209,7 @@ async function loadFromCloud(){
   try{
     const d=JSON.parse(localStorage.getItem('alq_data')||'null');
     if(d&&d.propiedades){propiedades=d.propiedades;nextId=d.nextId||nextId;}
-    if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{},ultimoReset:d.overrides.ultimoReset||null};}
+    if(d&&d.overrides){_overrides={renta:d.overrides.renta||{},mes:d.overrides.mes||{},ultimoReset:d.overrides.ultimoReset||null,gastoFijo:d.overrides.gastoFijo||{}};}
     else{migrarOverridesLocales();}
     if(d&&d.propiedades)saveData();
   }catch(e){}
@@ -573,9 +573,10 @@ const HISTORICO_ALQUILERES_MES={
   },
 };
 // Overrides editables por el usuario, sincronizados en la nube junto con las propiedades.
-//  _overrides.renta  -> { 'Propiedad|AÑO-MES': importe }   (correcciones de renta por mes)
-//  _overrides.mes    -> { 'AÑO_MES': {ingresos,gastos} }    (totales de mes fijados a mano)
-let _overrides={renta:{},mes:{},ultimoReset:null};
+//  _overrides.renta     -> { 'Propiedad|AÑO-MES': importe }   (correcciones de renta por mes)
+//  _overrides.mes       -> { 'AÑO_MES': {ingresos,gastos} }    (totales de mes fijados a mano)
+//  _overrides.gastoFijo -> { 'Propiedad|Concepto': {importe,anio,mes} } (nuevo importe de un gasto fijo, aplica desde anio-mes en adelante)
+let _overrides={renta:{},mes:{},ultimoReset:null,gastoFijo:{}};
 function getOverrideRentaMes(propNombre,anio,mes){
   const k=propNombre+'|'+anio+'-'+mes;
   return (_overrides.renta&&_overrides.renta[k]!==undefined)?_overrides.renta[k]:null;
@@ -598,6 +599,29 @@ function setOverrideMes(anio,mes,val){
   if(val===null){delete _overrides.mes[k];}
   else{_overrides.mes[k]=val;}
 }
+// Overrides de gastos FIJOS (Hipoteca, Comunidad, IBI, Seguro...) que vienen del histórico.
+// Permiten cambiar el importe "a partir de" un mes/año concreto, sin perder los importes pasados.
+function gfKey(propNombre,concepto){return propNombre+'|'+concepto;}
+function getOverrideGastoFijo(propNombre,concepto){
+  const k=gfKey(propNombre,concepto);
+  return (_overrides.gastoFijo&&_overrides.gastoFijo[k])?_overrides.gastoFijo[k]:null;
+}
+function setOverrideGastoFijo(propNombre,concepto,importe,anio,mes){
+  _overrides.gastoFijo=_overrides.gastoFijo||{};
+  const k=gfKey(propNombre,concepto);
+  if(importe===null||importe===''){delete _overrides.gastoFijo[k];}
+  else{_overrides.gastoFijo[k]={importe:Math.round((parseFloat(importe)||0)*100)/100,anio:parseInt(anio)||ANIO_ACTUAL,mes:parseInt(mes)||MES_ACTUAL};}
+}
+// Importe efectivo de un gasto fijo en un mes/año dado: aplica el override si ese mes es
+// igual o posterior a su fecha "a partir de"; si no, se mantiene el importe base original.
+function importeGastoFijoEnMes(propNombre,concepto,importeBase,anio,mes){
+  const ov=getOverrideGastoFijo(propNombre,concepto);
+  if(!ov) return importeBase;
+  if(anio>ov.anio||(anio===ov.anio&&mes>=ov.mes)) return ov.importe;
+  return importeBase;
+}
+// Escapa comillas simples para insertar texto dentro de atributos onclick con comillas simples.
+function escJs(s){return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
 // Gastos fijos por propiedad (€/mes, siempre iguales desde 2023)
 const HISTORICO_GASTOS={
   'Oliva 133':[
@@ -675,7 +699,10 @@ function alquilerHistorico(propNombre, anio, mes){
 function gastosHistoricos(propNombre, anio, mes){
   if(!propActiva(propNombre,anio,mes)) return [];
   // Usar gastos del histórico si existen, si no usar los gastos actuales de la propiedad
-  return HISTORICO_GASTOS[propNombre]||null;
+  const base=HISTORICO_GASTOS[propNombre];
+  if(!base) return null;
+  // Aplica el override de importe (si lo hay) para ese mes/año concreto.
+  return base.map(g=>({...g,importe:importeGastoFijoEnMes(propNombre,g.concepto,g.importe,anio,mes)}));
 }
 
 // ¿Aplica este gasto en el mes/año indicado?
@@ -1398,7 +1425,45 @@ function renderDetalle(cont){
       :`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verIngresos(${p.id})">+ ${p.tipo==='gestion'?'Editar ingreso de gestión':'Añadir inquilino'}</button>`);
   }else if(tab==='gastos'){
     const gastos=p.gastos||[];
-    tabContent=(gastos.length?`<div class="card">${gastos.map(g=>`<div class="list-item"><div><div class="li-title">${g.concepto}</div><div class="li-sub">${g.categoria}${g.recurrente?' · 🔁 Recurrente':' · Puntual'}${g.tipoAnual?' · ÷12':''}${gastoInicioLabel(g)?' · '+gastoInicioLabel(g):''}</div></div><div style="display:flex;align-items:center;gap:0.4rem;"><span style="font-weight:700;color:#991b1b;">${fmt(g.importe)}€</span><button onclick="borrarGasto(${p.id},${g.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem;">✕</button></div></div>`).join('')}</div>`:'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin gastos</p>');
+    const fijos=HISTORICO_GASTOS[p.nombre]||null;
+    let fijosHtml='';
+    if(fijos&&fijos.length){
+      fijosHtml=`<div class="card"><div style="font-size:0.85rem;font-weight:700;margin-bottom:0.6rem;">🔒 Gastos fijos mensuales</div>${fijos.map(g=>{
+        const key=gfKey(p.nombre,g.concepto),ov=getOverrideGastoFijo(p.nombre,g.concepto),actual=ov?ov.importe:g.importe;
+        const domKey=key.replace(/[^a-zA-Z0-9]/g,'_');
+        return`
+        <div class="list-item"><div><div class="li-title">${g.concepto}</div><div class="li-sub">${g.categoria}${ov?' · actualizado desde '+(NOMBRES_MES[ov.mes-1]||'').slice(0,3)+' '+ov.anio:''}</div></div><div style="display:flex;align-items:center;gap:0.4rem;"><span style="font-weight:700;color:#991b1b;">${fmt(actual)}€</span><button onclick="toggleEditGastoFijo('${escJs(p.nombre)}','${escJs(g.concepto)}')" style="background:none;border:none;cursor:pointer;font-size:0.9rem;" title="Editar">✏️</button></div></div>
+        <div id="gf-edit-${domKey}" style="display:none;background:#f8fafc;border-radius:8px;padding:0.6rem 0.8rem;margin-bottom:0.4rem;">
+          <div class="field"><label style="font-size:0.72rem;">Nuevo importe €/mes</label><input id="gf-imp-${domKey}" type="number" value="${actual}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
+          <div class="field-row">
+            <div class="field"><label style="font-size:0.72rem;">A partir del mes</label><input id="gf-mes-${domKey}" type="number" min="1" max="12" value="${MES_ACTUAL}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
+            <div class="field"><label style="font-size:0.72rem;">Año</label><input id="gf-anio-${domKey}" type="number" value="${ANIO_ACTUAL}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
+          </div>
+          <div style="display:flex;gap:0.4rem;">
+            <button onclick="guardarGastoFijo('${escJs(p.nombre)}','${escJs(g.concepto)}')" style="background:#065f46;color:white;border:none;border-radius:6px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer;flex:1;">✓ Guardar</button>
+            <button onclick="document.getElementById('gf-edit-${domKey}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:6px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer;">✕</button>
+          </div>
+        </div>`;
+      }).join('')}</div>`;
+    }
+    tabContent=fijosHtml+(gastos.length?`<div class="card">${gastos.map(g=>`
+      <div class="list-item"><div><div class="li-title">${g.concepto}</div><div class="li-sub">${g.categoria}${g.recurrente?' · 🔁 Recurrente':' · Puntual'}${g.tipoAnual?' · ÷12':''}${gastoInicioLabel(g)?' · '+gastoInicioLabel(g):''}</div></div><div style="display:flex;align-items:center;gap:0.4rem;"><span style="font-weight:700;color:#991b1b;">${fmt(g.importe)}€</span><button onclick="toggleEditGastoDetalle(${g.id})" style="background:none;border:none;cursor:pointer;font-size:0.9rem;" title="Editar">✏️</button><button onclick="borrarGasto(${p.id},${g.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem;">✕</button></div></div>
+      <div id="dg-edit-${g.id}" style="display:none;background:#f8fafc;border-radius:8px;padding:0.6rem 0.8rem;margin-bottom:0.4rem;">
+        <div class="field-row">
+          <div class="field"><label style="font-size:0.72rem;">Concepto</label><input id="dg-con-${g.id}" value="${g.concepto}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
+          <div class="field"><label style="font-size:0.72rem;">Importe €/mes</label><input id="dg-imp-${g.id}" type="number" value="${g.tipoAnual?(g.importeAnual||g.importe*12):g.importe}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label style="font-size:0.72rem;">Mes inicio</label><input id="dg-mes-${g.id}" type="number" min="1" max="12" value="${g.mes||MES_ACTUAL}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
+          <div class="field"><label style="font-size:0.72rem;">Año</label><input id="dg-anio-${g.id}" type="number" value="${g.anio||ANIO_ACTUAL}" style="font-size:0.82rem;padding:0.3rem 0.5rem;"/></div>
+          <div class="field" style="display:flex;align-items:flex-end;padding-bottom:0.35rem;"><label style="display:flex;align-items:center;gap:0.4rem;margin:0;font-size:0.78rem;"><input id="dg-rec-${g.id}" type="checkbox" ${g.recurrente?'checked':''} style="width:auto;margin:0;"/> Recurrente</label></div>
+        </div>
+        <div style="display:flex;gap:0.4rem;">
+          <button onclick="guardarEditGastoDetalle(${p.id},${g.id})" style="background:#065f46;color:white;border:none;border-radius:6px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer;flex:1;">✓ Guardar</button>
+          <button onclick="document.getElementById('dg-edit-${g.id}').style.display='none'" style="background:none;border:1px solid #d1d5db;border-radius:6px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer;">✕</button>
+        </div>
+      </div>
+    `).join('')}</div>`:(fijos&&fijos.length?'':'<p style="color:#aaa;text-align:center;padding:1rem 0;">Sin gastos</p>'));
     tabContent+=`<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem;" onclick="verGastos(${p.id})">+ Añadir gasto</button>`;
   }else if(tab==='suministros'){
     const sums=p.suministros||[];
@@ -1922,7 +1987,31 @@ function guardarGasto(propId){
   p.gastos.push({id:nextId++,categoria:cat,concepto:con,importe,importeAnual:esAnual?importeAnual:null,tipoAnual:esAnual,mes:parseInt(document.getElementById('g-mes').value)||1,anio:ANIO_ACTUAL,recurrente:document.getElementById('g-rec').checked});
   saveData();verGastos(propId);
 }
-function borrarGasto(propId,gId){const p=propiedades.find(x=>x.id===propId);p.gastos=p.gastos.filter(g=>g.id!==gId);saveData();verGastos(propId);}
+function borrarGasto(propId,gId){
+  const p=propiedades.find(x=>x.id===propId);
+  p.gastos=p.gastos.filter(g=>g.id!==gId);
+  saveData();
+  if(currentSection==='detalle'){window._dTab='gastos';renderDetalle(document.getElementById('main-content'));}
+  else{verGastos(propId);}
+}
+function toggleEditGastoFijo(propNombre,concepto){
+  const domKey=gfKey(propNombre,concepto).replace(/[^a-zA-Z0-9]/g,'_');
+  const wrap=document.getElementById('gf-edit-'+domKey);
+  if(wrap) wrap.style.display=wrap.style.display==='none'?'block':'none';
+}
+function guardarGastoFijo(propNombre,concepto){
+  const domKey=gfKey(propNombre,concepto).replace(/[^a-zA-Z0-9]/g,'_');
+  const impEl=document.getElementById('gf-imp-'+domKey),mesEl=document.getElementById('gf-mes-'+domKey),anioEl=document.getElementById('gf-anio-'+domKey);
+  if(!impEl) return;
+  const importe=parseFloat(impEl.value)||0;
+  const mes=mesEl?parseInt(mesEl.value)||MES_ACTUAL:MES_ACTUAL;
+  const anio=anioEl?parseInt(anioEl.value)||ANIO_ACTUAL:ANIO_ACTUAL;
+  setOverrideGastoFijo(propNombre,concepto,importe,anio,mes);
+  saveData();
+  window._dTab='gastos';
+  renderDetalle(document.getElementById('main-content'));
+  showToast('✓ Guardado');
+}
 function editarGasto(propId,gId){
   const wrap=document.getElementById('gasto-edit-'+gId);
   if(wrap) wrap.style.display=wrap.style.display==='none'?'block':'none';
@@ -1941,6 +2030,27 @@ function guardarEditGasto(propId,gId){
   if(anioEl){const a=parseInt(anioEl.value);if(a>=2020&&a<=2100)g.anio=a;}
   if(recEl)g.recurrente=recEl.checked;
   saveData();verGastos(propId);
+}
+function toggleEditGastoDetalle(gId){
+  const wrap=document.getElementById('dg-edit-'+gId);
+  if(wrap) wrap.style.display=wrap.style.display==='none'?'block':'none';
+}
+function guardarEditGastoDetalle(propId,gId){
+  const p=propiedades.find(x=>x.id===propId),g=(p.gastos||[]).find(x=>x.id===gId);
+  if(!g) return;
+  const conEl=document.getElementById('dg-con-'+gId),impEl=document.getElementById('dg-imp-'+gId);
+  if(!conEl||!impEl) return;
+  g.concepto=conEl.value.trim()||g.concepto;
+  const v=parseFloat(impEl.value)||0;
+  if(g.tipoAnual){g.importeAnual=v;g.importe=Math.round(v/12*100)/100;}
+  else{g.importe=v;}
+  const mesEl=document.getElementById('dg-mes-'+gId),anioEl=document.getElementById('dg-anio-'+gId),recEl=document.getElementById('dg-rec-'+gId);
+  if(mesEl){const m=parseInt(mesEl.value);if(m>=1&&m<=12)g.mes=m;}
+  if(anioEl){const a=parseInt(anioEl.value);if(a>=2020&&a<=2100)g.anio=a;}
+  if(recEl)g.recurrente=recEl.checked;
+  saveData();
+  window._dTab='gastos';
+  renderDetalle(document.getElementById('main-content'));
 }
 
 // ── SUMINISTROS ───────────────────────────────────────
@@ -2494,13 +2604,24 @@ function renderGestoriaPaso3(c){
     }
 
     // Calcular gastos deducibles seleccionados
+    const esHist=!!HISTORICO_GASTOS[p.nombre];
     const hg=HISTORICO_GASTOS[p.nombre]||p.gastos||[];
     let gasTotal=0;
     let gastosDetalle=[];
     hg.forEach(g=>{
       const cat=g.categoria||g.concepto;
       if(gatosSel[cat]===false) return;
-      const imp=(g.importe||0)*meses;
+      let imp;
+      if(esHist){
+        // Suma mes a mes aplicando el importe vigente en cada mes (respeta cambios "a partir de").
+        imp=0;
+        for(let y=dy;y<=hy;y++){
+          const mIni=(y===dy?dm:1),mFin=(y===hy?hm:12);
+          for(let m=mIni;m<=mFin;m++){imp+=importeGastoFijoEnMes(p.nombre,g.concepto,g.importe||0,y,m);}
+        }
+      } else {
+        imp=(g.importe||0)*meses;
+      }
       gasTotal+=imp;
       gastosDetalle.push({concepto:g.concepto,cat,importe:g.importe||0,total:imp,meses});
     });
@@ -2599,13 +2720,23 @@ function buildGestoriaData(){
       const mIni=(y===dy?dm:1),mFin=(y===hy?hm:12);
       for(let m=mIni;m<=mFin;m++) ingTotal+=(alquilerHistorico(p.nombre,y,m)||0);
     }
+    const esHist=!!HISTORICO_GASTOS[p.nombre];
     const hg=HISTORICO_GASTOS[p.nombre]||p.gastos||[];
     let gasTotal=0;
     const gastosDetalle=[];
     hg.forEach(g=>{
       const cat=g.categoria||g.concepto;
       if(gatosSel[cat]===false) return;
-      const imp=(g.importe||0)*meses;
+      let imp;
+      if(esHist){
+        imp=0;
+        for(let y=dy;y<=hy;y++){
+          const mIni=(y===dy?dm:1),mFin=(y===hy?hm:12);
+          for(let m=mIni;m<=mFin;m++){imp+=importeGastoFijoEnMes(p.nombre,g.concepto,g.importe||0,y,m);}
+        }
+      } else {
+        imp=(g.importe||0)*meses;
+      }
       gasTotal+=imp;
       gastosDetalle.push({concepto:g.concepto,importe:g.importe||0,meses,total:imp});
     });
